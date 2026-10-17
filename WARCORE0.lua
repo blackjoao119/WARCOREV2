@@ -72,6 +72,33 @@ getgenv().SystemConfig = {
     -- Sistemas
     NoClipEnabled = false,
     TeleportEnabled = false,
+
+    -- Keybinds (nome da tecla; "Nenhuma" = desativado)
+    Keybinds = {
+        ToggleMenu = "RightShift",
+        MiraAtiva = "Nenhuma",
+        FlyEnabled = "Nenhuma",
+        SpeedEnabled = "Nenhuma",
+        NoClipEnabled = "Nenhuma",
+        TeleportEnabled = "Nenhuma",
+    },
+
+    -- ESP (Caixa 2D)
+    EspBoxEnabled = false,
+    EspHealthEnabled = false,
+    EspBoxColor = Color3.fromRGB(255, 0, 0),
+
+    -- Circulo de FOV (raio = FovRadius, em pixels, igual a mira)
+    FovCircleEnabled = false,
+    FovCircleColor = Color3.fromRGB(255, 255, 255),
+
+    -- Teleporte por toque
+    ClickTeleportEnabled = false,
+
+    -- Utilidade
+    AntiAfkEnabled = false,
+    ClockOverrideEnabled = false,
+    ClockTime = 14,
 }
 
 --// =============================================
@@ -102,7 +129,7 @@ local OriginalSettings = {
 local CONFIG_FILE = "WARCORE0_autosave.json"
 
 local ColorKeys = {}
-for _, k in ipairs({ "HlEnemyColor", "LineColor", "DistColor" }) do
+for _, k in ipairs({ "HlEnemyColor", "LineColor", "DistColor", "EspBoxColor", "FovCircleColor" }) do
     ColorKeys[k] = true
 end
 
@@ -130,6 +157,12 @@ local function loadConfig()
     for k, v in pairs(data) do
         if ColorKeys[k] and type(v) == "table" and v.r then
             getgenv().SystemConfig[k] = Color3.new(v.r, v.g, v.b)
+        elseif k == "Keybinds" and type(v) == "table" then
+            for kk, vv in pairs(v) do
+                if getgenv().SystemConfig.Keybinds[kk] ~= nil then
+                    getgenv().SystemConfig.Keybinds[kk] = vv
+                end
+            end
         elseif getgenv().SystemConfig[k] ~= nil then
             getgenv().SystemConfig[k] = v
         end
@@ -615,6 +648,120 @@ local function CreateToggleControl(parent, opts, order)
     return { Set = function(_, v) state = v and true or false; render(true) end }
 end
 
+--// ----- KEYBINDS -----
+-- Estado central: captura de tecla + ações registradas + teclas ativas
+local KeybindState = {
+    capturing = nil,   -- controle que está aguardando uma tecla
+    handlers = {},     -- [controle] = function(keyName)
+    actions = {},      -- [actionName] = function()
+    keys = {},         -- [actionName] = "NomeDaTecla" | "Nenhuma"
+}
+local UIRefs = {}      -- referências de controles para sincronizar com keybinds
+KeybindState.NONE = "Nenhuma"
+
+local function CreateKeybindControl(parent, opts, order)
+    local row = New("Frame", {
+        Name = "Keybind_" .. (opts.Name or ""),
+        Size = UDim2.new(1, 0, 0, 50),
+        BackgroundColor3 = Theme.Card,
+        BorderSizePixel = 0,
+        LayoutOrder = order or 0,
+    }, parent)
+    Corner(row, 10)
+    Stroke(row, Theme.Stroke, 1, 0.35)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -140, 1, 0),
+        Position = UDim2.new(0, 14, 0, 0),
+        BackgroundTransparency = 1,
+        Text = opts.Name or "",
+        TextColor3 = Theme.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+    }, row)
+
+    local value = opts.Key or KeybindState.NONE
+    local keyBtn = New("TextButton", {
+        Size = UDim2.new(0, 116, 0, 32),
+        Position = UDim2.new(1, -128, 0.5, -16),
+        BackgroundColor3 = Theme.Bg2,
+        Text = value,
+        TextColor3 = Theme.Accent,
+        Font = Enum.Font.GothamBold,
+        TextSize = 13,
+        AutoButtonColor = false,
+        ZIndex = 2,
+    }, row)
+    Corner(keyBtn, 8)
+    local keyStroke = Stroke(keyBtn, Theme.Accent, 1, 0.4)
+
+    local function render()
+        keyBtn.Text = value
+        local active = (value ~= KeybindState.NONE)
+        keyBtn.TextColor3 = active and Theme.Accent or Theme.SubText
+        keyStroke.Color = active and Theme.Accent or Theme.Stroke
+    end
+
+    local control = {}
+    keyBtn.MouseButton1Click:Connect(function()
+        if KeybindState.capturing == control then
+            KeybindState.capturing = nil
+            render()
+            return
+        end
+        KeybindState.capturing = control
+        keyBtn.Text = "Pressione..."
+        keyBtn.TextColor3 = Color3.fromRGB(255, 205, 0)
+    end)
+
+    KeybindState.handlers[control] = function(keyName)
+        if keyName == "__cancel" then
+            render()
+            return
+        end
+        value = (keyName == value) and KeybindState.NONE or keyName
+        render()
+        if opts.Callback then opts.Callback(value) end
+    end
+
+    render()
+    control.Set = function(_, k) value = k or KeybindState.NONE; render() end
+    return control
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    local keyName = input.KeyCode and input.KeyCode.Name
+    if not keyName then return end
+
+    -- Captura de tecla (prioridade máxima)
+    if KeybindState.capturing then
+        local handler = KeybindState.handlers[KeybindState.capturing]
+        KeybindState.capturing = nil
+        if handler then
+            handler(keyName == "Escape" and "__cancel" or keyName)
+        end
+        return
+    end
+
+    if gameProcessed then return end
+    for actionName, fn in pairs(KeybindState.actions) do
+        local bound = KeybindState.keys[actionName]
+        if bound and bound ~= KeybindState.NONE and bound == keyName then
+            fn()
+        end
+    end
+end)
+
+-- Registra uma ação vinculável (chamado após as funções existirem)
+local function RegisterKeybind(actionName, defaultKey, onTrigger)
+    KeybindState.actions[actionName] = onTrigger
+    local saved = getgenv().SystemConfig.Keybinds and getgenv().SystemConfig.Keybinds[actionName]
+    KeybindState.keys[actionName] = saved or defaultKey or KeybindState.NONE
+end
+
 -- Modal reutilizável (dropdown / color picker)
 local function ShowModal(title, builder)
     local vp = Camera.ViewportSize
@@ -956,6 +1103,10 @@ local function CreateWindow(cfg)
 
         function tab:CreateToggle(o)
             return CreateToggleControl(page, o, nextOrder())
+        end
+
+        function tab:CreateKeybind(o)
+            return CreateKeybindControl(page, o, nextOrder())
         end
 
         function tab:CreateSlider(o)
@@ -1830,6 +1981,61 @@ local function stopNoClip()
 end
 
 --// =============================================
+--// AÇÕES VINCULÁVEIS (KEYBINDS) + SINCRONIZAÇÃO
+--// Reutiliza as MESMAS funções usadas pelos toggles existentes,
+--// então comportamento continua idêntico.
+--// =============================================
+local Actions = {}
+
+function Actions.setMira(v)
+    getgenv().SystemConfig.MiraAtiva = v
+    FloatingBtn.Visible = v
+    UpdateBtnVisual(v)
+    if UIRefs.MiraAtiva then UIRefs.MiraAtiva:Set(v) end
+end
+
+function Actions.setFly(v)
+    getgenv().SystemConfig.FlyEnabled = v
+    if v then startFly() else stopFly() end
+    if UIRefs.FlyEnabled then UIRefs.FlyEnabled:Set(v) end
+end
+
+function Actions.setNoClip(v)
+    getgenv().SystemConfig.NoClipEnabled = v
+    if v then startNoClip() else stopNoClip() end
+    if UIRefs.NoClipEnabled then UIRefs.NoClipEnabled:Set(v) end
+end
+
+function Actions.setSpeed(v)
+    getgenv().SystemConfig.SpeedEnabled = v
+    local char = Player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.WalkSpeed = v and getgenv().SystemConfig.SpeedValue or OriginalWalkSpeed end
+    if UIRefs.SpeedEnabled then UIRefs.SpeedEnabled:Set(v) end
+end
+
+function Actions.setTeleport(v)
+    getgenv().SystemConfig.TeleportEnabled = v
+    if v then
+        animateBtn(TpFloatingBtn, true)
+    else
+        animateBtn(TpFloatingBtn, false)
+        if isTeleportOpen then
+            isTeleportOpen = false
+            toggleMenu(false)
+        end
+    end
+    if UIRefs.TeleportEnabled then UIRefs.TeleportEnabled:Set(v) end
+end
+
+RegisterKeybind("ToggleMenu", "RightShift", function() Win.toggle() end)
+RegisterKeybind("MiraAtiva", KeybindState.NONE, function() Actions.setMira(not getgenv().SystemConfig.MiraAtiva) end)
+RegisterKeybind("FlyEnabled", KeybindState.NONE, function() Actions.setFly(not getgenv().SystemConfig.FlyEnabled) end)
+RegisterKeybind("SpeedEnabled", KeybindState.NONE, function() Actions.setSpeed(not getgenv().SystemConfig.SpeedEnabled) end)
+RegisterKeybind("NoClipEnabled", KeybindState.NONE, function() Actions.setNoClip(not getgenv().SystemConfig.NoClipEnabled) end)
+RegisterKeybind("TeleportEnabled", KeybindState.NONE, function() Actions.setTeleport(not getgenv().SystemConfig.TeleportEnabled) end)
+
+--// =============================================
 --// ABAS E CONTROLES (nova interface)
 --// =============================================
 local CombatTab = Win.newTab("🔫 Combate")
@@ -1841,14 +2047,17 @@ local TeleportTab = Win.newTab("📍 Teleporte")
 local MonitorTab = Win.newTab("📊 Monitor")
 
 --// ----- ABA COMBATE -----
-CombatTab:CreateToggle({
+UIRefs.MiraAtiva = CombatTab:CreateToggle({
     Name = "Ativar Mira Assistida",
     CurrentValue = getgenv().SystemConfig.MiraAtiva,
-    Callback = function(v)
-        getgenv().SystemConfig.MiraAtiva = v
-        FloatingBtn.Visible = v
-        UpdateBtnVisual(v)
-    end
+    Callback = Actions.setMira,
+})
+CombatTab:CreateSlider({
+    Name = "Raio de Alcance da Mira (FOV)",
+    Range = {50, 800},
+    Increment = 10,
+    CurrentValue = getgenv().SystemConfig.FovRadius,
+    Callback = function(v) getgenv().SystemConfig.FovRadius = v end
 })
 CombatTab:CreateSlider({
     Name = "Suavidade de Resposta",
@@ -1900,6 +2109,23 @@ VisualTab:CreateSlider({
     Increment = 5,
     CurrentValue = getgenv().SystemConfig.MicroWidth,
     Callback = function(v) getgenv().SystemConfig.MicroWidth = v end
+})
+
+VisualTab:CreateSection("ESP • Caixa 2D")
+VisualTab:CreateToggle({
+    Name = "Ativar ESP Box (contorno)",
+    CurrentValue = getgenv().SystemConfig.EspBoxEnabled,
+    Callback = function(v) getgenv().SystemConfig.EspBoxEnabled = v end
+})
+VisualTab:CreateToggle({
+    Name = "Barra de Vida no ESP",
+    CurrentValue = getgenv().SystemConfig.EspHealthEnabled,
+    Callback = function(v) getgenv().SystemConfig.EspHealthEnabled = v end
+})
+VisualTab:CreateColorPicker({
+    Name = "Cor da Caixa ESP",
+    Color = getgenv().SystemConfig.EspBoxColor,
+    Callback = function(Value) getgenv().SystemConfig.EspBoxColor = Value end
 })
 
 --// ----- ABA OPÇÕES RX -----
@@ -1987,6 +2213,16 @@ RxTab:CreateDropdown({
         getgenv().SystemConfig.DotShape = shapeMap[Option] or "●"
     end
 })
+RxTab:CreateToggle({
+    Name = "Exibir Círculo de FOV (alcance da mira)",
+    CurrentValue = getgenv().SystemConfig.FovCircleEnabled,
+    Callback = function(v) getgenv().SystemConfig.FovCircleEnabled = v end
+})
+RxTab:CreateColorPicker({
+    Name = "Cor do Círculo de FOV",
+    Color = getgenv().SystemConfig.FovCircleColor,
+    Callback = function(Value) getgenv().SystemConfig.FovCircleColor = Value end
+})
 
 --// ----- ABA ILUMINAÇÃO -----
 LightTab:CreateToggle({
@@ -2016,13 +2252,31 @@ LightTab:CreateToggle({
         Lighting.GlobalShadows = not v
     end
 })
+LightTab:CreateSection("🕐 Horário Fixo")
+LightTab:CreateToggle({
+    Name = "Forçar Horário do Jogo",
+    CurrentValue = getgenv().SystemConfig.ClockOverrideEnabled,
+    Callback = function(v)
+        getgenv().SystemConfig.ClockOverrideEnabled = v
+        if not v then
+            Lighting.ClockTime = OriginalSettings.ClockTime
+        end
+    end
+})
+LightTab:CreateSlider({
+    Name = "Hora do Dia (0-24)",
+    Range = {0, 24},
+    Increment = 1,
+    CurrentValue = getgenv().SystemConfig.ClockTime,
+    Callback = function(v) getgenv().SystemConfig.ClockTime = v end
+})
 
 --// ----- ABA MOVIMENTO -----
 MovimentTab:CreateSection("🕊️ Fly")
-MovimentTab:CreateToggle({
+UIRefs.FlyEnabled = MovimentTab:CreateToggle({
     Name = "Ativar Fly",
     CurrentValue = getgenv().SystemConfig.FlyEnabled,
-    Callback = function(v) if v then startFly() else stopFly() end end
+    Callback = Actions.setFly,
 })
 MovimentTab:CreateToggle({
     Name = "Modo Infinito (câmera)",
@@ -2038,25 +2292,17 @@ MovimentTab:CreateSlider({
 })
 
 MovimentTab:CreateSection("🧱 No-Clip")
-MovimentTab:CreateToggle({
+UIRefs.NoClipEnabled = MovimentTab:CreateToggle({
     Name = "Ativar Matriz No-Clip",
     CurrentValue = getgenv().SystemConfig.NoClipEnabled,
-    Callback = function(v)
-        getgenv().SystemConfig.NoClipEnabled = v
-        if v then startNoClip() else stopNoClip() end
-    end
+    Callback = Actions.setNoClip,
 })
 
 MovimentTab:CreateSection("⚡ Velocidade de Caminhada")
-MovimentTab:CreateToggle({
+UIRefs.SpeedEnabled = MovimentTab:CreateToggle({
     Name = "Ativar Speed Hack",
     CurrentValue = getgenv().SystemConfig.SpeedEnabled,
-    Callback = function(v)
-        getgenv().SystemConfig.SpeedEnabled = v
-        local char = Player.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if hum then hum.WalkSpeed = v and getgenv().SystemConfig.SpeedValue or OriginalWalkSpeed end
-    end
+    Callback = Actions.setSpeed,
 })
 MovimentTab:CreateSlider({
     Name = "Velocidade",
@@ -2106,29 +2352,47 @@ MovimentTab:CreateToggle({
     Callback = function(v) getgenv().SystemConfig.InfiniteJump = v end
 })
 
+MovimentTab:CreateSection("🛡️ Utilidade")
+MovimentTab:CreateToggle({
+    Name = "Anti-AFK (não ser kickado por inatividade)",
+    CurrentValue = getgenv().SystemConfig.AntiAfkEnabled,
+    Callback = function(v) getgenv().SystemConfig.AntiAfkEnabled = v end
+})
+
 --// ----- ABA TELEPORTE -----
 TeleportTab:CreateSection("Painel de Teleporte")
-TeleportTab:CreateToggle({
+UIRefs.TeleportEnabled = TeleportTab:CreateToggle({
     Name = "Ativar Sistema de Teleporte",
     CurrentValue = getgenv().SystemConfig.TeleportEnabled,
-    Callback = function(value)
-        getgenv().SystemConfig.TeleportEnabled = value
-        if value then
-            animateBtn(TpFloatingBtn, true)
-        else
-            animateBtn(TpFloatingBtn, false)
-            if isTeleportOpen then
-                isTeleportOpen = false
-                toggleMenu(false)
-            end
-        end
-    end
+    Callback = Actions.setTeleport,
 })
 TeleportTab:CreateButton({
     Name = "Abrir Painel de Teleporte",
     Callback = function()
         isTeleportOpen = true
         toggleMenu(true)
+    end
+})
+
+TeleportTab:CreateSection("🎯 Teleporte Rápido")
+TeleportTab:CreateToggle({
+    Name = "Teleporte por Toque (tocar no mapa)",
+    CurrentValue = getgenv().SystemConfig.ClickTeleportEnabled,
+    Callback = function(v) getgenv().SystemConfig.ClickTeleportEnabled = v end
+})
+TeleportTab:CreateButton({
+    Name = "Teleportar até o Inimigo Mais Próximo",
+    Callback = function()
+        local target = getTarget()
+        local char = Player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not (target and hrp) then
+            WarcoreUI:Notify({ Title = "🎯 Teleporte", Content = "Nenhum inimigo encontrado no alcance.", Duration = 3 })
+            return
+        end
+        local tRoot = target.Parent and target.Parent:FindFirstChild("HumanoidRootPart")
+        hrp.CFrame = tRoot and (tRoot.CFrame * CFrame.new(0, 0, 3)) or CFrame.new(target.Position)
+        WarcoreUI:Notify({ Title = "🎯 Teleporte", Content = "Teleportado até o inimigo mais próximo.", Duration = 3 })
     end
 })
 
@@ -2143,6 +2407,32 @@ MonitorTab:CreateToggle({
     CurrentValue = getgenv().SystemConfig.ShowPlayers,
     Callback = function(v) getgenv().SystemConfig.ShowPlayers = v; countF.Visible = v end
 })
+
+--// ----- ABA KEYBINDS -----
+local KeybindTab = Win.newTab("⌨️ Keybinds")
+KeybindTab:CreateSection("Teclas de Atalho (toque e pressione a tecla)")
+
+local function makeBind(actionName, label)
+    local control
+    control = KeybindTab:CreateKeybind({
+        Name = label,
+        Key = KeybindState.keys[actionName] or KeybindState.NONE,
+        Callback = function(k)
+            KeybindState.keys[actionName] = k
+            if getgenv().SystemConfig.Keybinds then
+                getgenv().SystemConfig.Keybinds[actionName] = k
+            end
+        end,
+    })
+    return control
+end
+
+makeBind("ToggleMenu", "Abrir / Fechar Menu")
+makeBind("MiraAtiva", "Alternar Mira Assistida")
+makeBind("FlyEnabled", "Alternar Fly")
+makeBind("SpeedEnabled", "Alternar Speed Hack")
+makeBind("NoClipEnabled", "Alternar No-Clip")
+makeBind("TeleportEnabled", "Alternar Sistema de Teleporte")
 
 Win.selectTab(1)
 
@@ -2196,6 +2486,172 @@ end
 for _, p in ipairs(Players:GetPlayers()) do createTracer(p) end
 Players.PlayerAdded:Connect(createTracer)
 Players.PlayerRemoving:Connect(destroyTracer)
+
+--// =============================================
+--// ESP (CAIXA 2D) + BARRA DE VIDA + CIRCULO DE FOV
+--// =============================================
+local Visuals = { Boxes = {} }
+
+if hasDrawing then
+    local okCircle, circle = pcall(Drawing.new, "Circle")
+    if okCircle and circle then
+        circle.Thickness = 1.5
+        circle.NumSides = 64
+        circle.Filled = false
+        circle.Transparency = 0.7
+        circle.Visible = false
+        Visuals.FovCircle = circle
+    end
+end
+
+function Visuals.destroyEsp(p)
+    local b = Visuals.Boxes[p]
+    if b then
+        for _, d in pairs(b) do d:Remove() end
+        Visuals.Boxes[p] = nil
+    end
+end
+
+local function createEsp(p)
+    if not hasDrawing then return end
+    if p == Player or Visuals.Boxes[p] then return end
+    local okBox, box = pcall(Drawing.new, "Square")
+    if not okBox or not box then return end
+    box.Filled = false
+    box.Thickness = 1.5
+    box.Visible = false
+    local _, hpBg = pcall(Drawing.new, "Square")
+    hpBg.Filled = true
+    hpBg.Color = Color3.fromRGB(0, 0, 0)
+    hpBg.Transparency = 0.6
+    hpBg.Visible = false
+    local _, hpFill = pcall(Drawing.new, "Square")
+    hpFill.Filled = true
+    hpFill.Color = Color3.fromRGB(0, 255, 120)
+    hpFill.Visible = false
+    local _, nameText = pcall(Drawing.new, "Text")
+    nameText.Size = 13
+    nameText.Center = true
+    nameText.Outline = true
+    nameText.Color = Color3.fromRGB(255, 255, 255)
+    nameText.Visible = false
+    Visuals.Boxes[p] = { box = box, hpBg = hpBg, hpFill = hpFill, nameText = nameText }
+    p.AncestryChanged:Connect(function()
+        if not p.Parent then Visuals.destroyEsp(p) end
+    end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do createEsp(p) end
+Players.PlayerAdded:Connect(createEsp)
+Players.PlayerRemoving:Connect(Visuals.destroyEsp)
+
+function Visuals.updateBoxes()
+    if not hasDrawing then return end
+    local cfg = getgenv().SystemConfig
+    for p, b in pairs(Visuals.Boxes) do
+        local char = p.Character
+        local head = char and char:FindFirstChild("Head")
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local isTeam = (p.Team == Player.Team and Player.Team ~= nil)
+        local blocked = isTeam and cfg.TeamCheck
+        local show = cfg.EspBoxEnabled and head and root and hum and hum.Health > 0 and not blocked
+
+        local top, bottom, left, width
+        if show then
+            local hp, on1 = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.6, 0))
+            local fp, on2 = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
+            if on1 and on2 and hp.Z > 0 and fp.Z > 0 then
+                top = hp.Y
+                bottom = fp.Y
+                local height = math.max(bottom - top, 8)
+                width = height * 0.55
+                left = ((hp.X + fp.X) / 2) - width / 2
+            else
+                show = false
+            end
+        end
+
+        if show then
+            local color = isTeam and Color3.fromRGB(0, 255, 0) or cfg.EspBoxColor
+            b.box.Position = Vector2.new(left, top)
+            b.box.Size = Vector2.new(width, bottom - top)
+            b.box.Color = color
+            b.box.Visible = true
+
+            if cfg.EspHealthEnabled and b.hpBg and b.hpFill then
+                local ratio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+                local barH = bottom - top
+                local bx = left - 6
+                b.hpBg.Position = Vector2.new(bx, top)
+                b.hpBg.Size = Vector2.new(3, barH)
+                b.hpBg.Visible = true
+                b.hpFill.Position = Vector2.new(bx, top + barH * (1 - ratio))
+                b.hpFill.Size = Vector2.new(3, barH * ratio)
+                b.hpFill.Visible = true
+            else
+                if b.hpBg then b.hpBg.Visible = false end
+                if b.hpFill then b.hpFill.Visible = false end
+            end
+
+            if b.nameText then
+                b.nameText.Position = Vector2.new(left + width / 2, top - 16)
+                b.nameText.Text = p.Name
+                b.nameText.Color = color
+                b.nameText.Visible = true
+            end
+        else
+            b.box.Visible = false
+            if b.hpBg then b.hpBg.Visible = false end
+            if b.hpFill then b.hpFill.Visible = false end
+            if b.nameText then b.nameText.Visible = false end
+        end
+    end
+end
+
+function Visuals.updateFov()
+    local circle = Visuals.FovCircle
+    if not circle then return end
+    local cfg = getgenv().SystemConfig
+    if cfg.FovCircleEnabled then
+        local vp = Camera.ViewportSize
+        circle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
+        circle.Radius = cfg.FovRadius
+        circle.Color = cfg.FovCircleColor
+        circle.Visible = true
+    else
+        circle.Visible = false
+    end
+end
+
+--// =============================================
+--// TELEPORTE POR TOQUE + ANTI-AFK
+--// =============================================
+UserInputService.InputBegan:Connect(function(input, gp)
+    if not getgenv().SystemConfig.ClickTeleportEnabled then return end
+    if gp then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local char = Player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local pos = input.Position
+    local ray = Camera:ViewportPointToRay(pos.X, pos.Y)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = { char }
+    local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+    local targetPos = result and (result.Position + Vector3.new(0, 3, 0)) or (ray.Origin + ray.Direction * 60)
+    hrp.CFrame = CFrame.new(targetPos)
+end)
+
+Player.Idled:Connect(function()
+    if not getgenv().SystemConfig.AntiAfkEnabled then return end
+    local vu = game:GetService("VirtualUser")
+    pcall(function()
+        vu:CaptureController()
+        vu:ClickButton2(Vector2.new())
+    end)
+end)
 
 local function getLineOrigin()
     local vp = Camera.ViewportSize
@@ -2301,6 +2757,8 @@ RunService.RenderStepped:Connect(function(dt)
     end
 
     updateLines()
+    Visuals.updateBoxes()
+    Visuals.updateFov()
 
     if getgenv().SystemConfig.MiraAtiva then
         local target = getTarget()
@@ -2323,6 +2781,10 @@ RunService.RenderStepped:Connect(function(dt)
             Lighting.Brightness = OriginalSettings.Brightness
             Lighting.ExposureCompensation = OriginalSettings.Exposure
         end
+    end
+
+    if getgenv().SystemConfig.ClockOverrideEnabled then
+        Lighting.ClockTime = getgenv().SystemConfig.ClockTime
     end
 
     for _, p in ipairs(Players:GetPlayers()) do
