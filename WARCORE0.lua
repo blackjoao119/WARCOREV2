@@ -94,6 +94,9 @@ getgenv().SystemConfig = {
 
     -- Teleporte por toque
     ClickTeleportEnabled = false,
+    ClickTeleportDoubleTap = true,
+    ClickTeleportShowLine = true,
+    ClickTeleportMaxDistance = 500,
 
     -- Utilidade
     AntiAfkEnabled = false,
@@ -106,6 +109,7 @@ getgenv().SystemConfig = {
 --// =============================================
 local NoClipAtivo = false
 local isTeleportOpen = false
+local CancelTeleportSelection = nil
 local NoClipConnection = nil
 local flyVelocity = nil
 local flyConnection = nil
@@ -2144,6 +2148,7 @@ function Actions.setTeleport(v)
             isTeleportOpen = false
             toggleMenu(false)
         end
+        if CancelTeleportSelection then CancelTeleportSelection() end
     end
     if UIRefs.TeleportEnabled then UIRefs.TeleportEnabled:Set(v) end
 end
@@ -2498,7 +2503,23 @@ TeleportTab:CreateSection("🎯 Teleporte Rápido")
 TeleportTab:CreateToggle({
     Name = "Teleporte por Toque (tocar no mapa)",
     CurrentValue = getgenv().SystemConfig.ClickTeleportEnabled,
-    Callback = function(v) getgenv().SystemConfig.ClickTeleportEnabled = v end
+    Callback = function(v)
+        getgenv().SystemConfig.ClickTeleportEnabled = v
+        if not v and CancelTeleportSelection then CancelTeleportSelection() end
+    end
+})
+TeleportTab:CreateToggle({
+    Name = "Confirmação com Duplo Toque (desligado = toque único original)",
+    CurrentValue = getgenv().SystemConfig.ClickTeleportDoubleTap,
+    Callback = function(v)
+        getgenv().SystemConfig.ClickTeleportDoubleTap = v
+        if not v and CancelTeleportSelection then CancelTeleportSelection() end
+    end
+})
+TeleportTab:CreateToggle({
+    Name = "Linha Verde Neon até o Destino",
+    CurrentValue = getgenv().SystemConfig.ClickTeleportShowLine,
+    Callback = function(v) getgenv().SystemConfig.ClickTeleportShowLine = v end
 })
 TeleportTab:CreateButton({
     Name = "Teleportar até o Inimigo Mais Próximo",
@@ -2747,22 +2768,496 @@ end
 --// =============================================
 --// TELEPORTE POR TOQUE + ANTI-AFK
 --// =============================================
-UserInputService.InputBegan:Connect(function(input, gp)
-    if not getgenv().SystemConfig.ClickTeleportEnabled then return end
-    if gp then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+local TP_NEON = Color3.fromRGB(57, 255, 20)
+local TP_DOUBLE_TAP_WINDOW = 0.38
+local TP_DOUBLE_TAP_RADIUS = 56
+local TP_TAP_MAX_TIME = 0.28
+local TP_TAP_MAX_MOVE = 12
+local TP_DEFAULT_MAX_DISTANCE = 500
+
+local tpSelection = {
+    pending = nil,
+    lastTapAt = 0,
+    lastTapPos = Vector2.new(),
+    activeInput = nil,
+    startPos = Vector2.new(),
+    startAt = 0,
+    moved = false,
+}
+
+local tpNotifyAt = 0
+local function notifyTp(title, content)
+    local now = os.clock()
+    if now - tpNotifyAt < 1 then return end
+    tpNotifyAt = now
+    WarcoreUI:Notify({ Title = title, Content = content, Duration = 2.5 })
+end
+
+local tpConfirm = New("Frame", {
+    Name = "WarcoreTeleportConfirm",
+    AnchorPoint = Vector2.new(0.5, 1),
+    Position = UDim2.new(0.5, 0, 1, -24),
+    Size = UDim2.new(0.9, 0, 0, 104),
+    BackgroundColor3 = Color3.fromRGB(12, 18, 10),
+    BackgroundTransparency = 0.05,
+    BorderSizePixel = 0,
+    Visible = false,
+    ZIndex = 30,
+}, tpGui)
+Corner(tpConfirm, 14)
+local tpConfirmStroke = Stroke(tpConfirm, TP_NEON, 1.5, 0.25)
+New("UISizeConstraint", { MaxSize = Vector2.new(360, 104) }, tpConfirm)
+
+New("TextLabel", {
+    Name = "Title",
+    Size = UDim2.new(1, -24, 0, 22),
+    Position = UDim2.new(0, 12, 0, 8),
+    BackgroundTransparency = 1,
+    Text = "DESTINO SELECIONADO",
+    TextColor3 = TP_NEON,
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 31,
+}, tpConfirm)
+
+local tpConfirmInfo = New("TextLabel", {
+    Name = "Info",
+    Size = UDim2.new(1, -24, 0, 18),
+    Position = UDim2.new(0, 12, 0, 29),
+    BackgroundTransparency = 1,
+    Text = "Toque em TELEPORTAR para confirmar",
+    TextColor3 = Color3.fromRGB(220, 235, 210),
+    Font = Enum.Font.GothamMedium,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    ZIndex = 31,
+}, tpConfirm)
+
+local tpTeleportBtn = New("TextButton", {
+    Name = "Teleportar",
+    Size = UDim2.new(0.6, -4, 0, 46),
+    Position = UDim2.new(0, 12, 1, -54),
+    BackgroundColor3 = TP_NEON,
+    Text = "TELEPORTAR",
+    TextColor3 = Color3.fromRGB(8, 16, 5),
+    Font = Enum.Font.GothamBlack,
+    TextSize = 15,
+    AutoButtonColor = false,
+    ZIndex = 32,
+}, tpConfirm)
+Corner(tpTeleportBtn, 10)
+Stroke(tpTeleportBtn, Color3.fromRGB(220, 255, 210), 1, 0.35)
+
+local tpCancelBtn = New("TextButton", {
+    Name = "Cancelar",
+    Size = UDim2.new(0.4, -8, 0, 46),
+    Position = UDim2.new(0.6, 0, 1, -54),
+    BackgroundColor3 = Color3.fromRGB(42, 20, 18),
+    Text = "CANCELAR",
+    TextColor3 = Color3.fromRGB(255, 220, 215),
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    AutoButtonColor = false,
+    ZIndex = 32,
+}, tpConfirm)
+Corner(tpCancelBtn, 10)
+Stroke(tpCancelBtn, Color3.fromRGB(255, 77, 61), 1, 0.45)
+
+local oldTpMarker = workspace:FindFirstChild("WarcoreTpMarker")
+if oldTpMarker then oldTpMarker:Destroy() end
+
+local tpMarkerPart = Instance.new("Part")
+tpMarkerPart.Name = "WarcoreTpMarker"
+tpMarkerPart.Anchored = true
+tpMarkerPart.CanCollide = false
+tpMarkerPart.CanTouch = false
+tpMarkerPart.CanQuery = false
+tpMarkerPart.Transparency = 1
+tpMarkerPart.Size = Vector3.new(0.2, 0.2, 0.2)
+tpMarkerPart.Archivable = false
+tpMarkerPart.Parent = workspace
+
+local tpMarkerGui = New("BillboardGui", {
+    Name = "WarcoreTpMarkerGui",
+    Size = UDim2.fromOffset(90, 90),
+    AlwaysOnTop = true,
+    LightInfluence = 0,
+    MaxDistance = 1200,
+    Enabled = false,
+}, tpMarkerPart)
+
+local tpMarkerRing = New("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.5, 0),
+    Size = UDim2.fromScale(0.66, 0.66),
+    BackgroundTransparency = 1,
+    ZIndex = 2,
+}, tpMarkerGui)
+Corner(tpMarkerRing, 999)
+local tpMarkerStroke = Stroke(tpMarkerRing, TP_NEON, 3, 0.05)
+local tpMarkerDot = New("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.5, 0),
+    Size = UDim2.fromOffset(8, 8),
+    BackgroundColor3 = TP_NEON,
+    BorderSizePixel = 0,
+    ZIndex = 3,
+}, tpMarkerGui)
+Corner(tpMarkerDot, 4)
+New("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 18),
+    Position = UDim2.new(0, 0, 1, -18),
+    BackgroundTransparency = 1,
+    Text = "DESTINO",
+    TextColor3 = TP_NEON,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    TextStrokeTransparency = 0.35,
+    TextStrokeColor3 = Color3.fromRGB(0, 0, 0),
+    ZIndex = 4,
+}, tpMarkerGui)
+
+local tpLineGlow, tpLineMain
+if type(Drawing) == "table" and type(Drawing.new) == "function" then
+    local okGlow, glow = pcall(Drawing.new, "Line")
+    if okGlow and glow then
+        glow.Color = TP_NEON
+        glow.Thickness = 7
+        glow.Transparency = 0.72
+        glow.Visible = false
+        glow.ZIndex = 1
+        tpLineGlow = glow
+    end
+    local okMain, main = pcall(Drawing.new, "Line")
+    if okMain and main then
+        main.Color = TP_NEON
+        main.Thickness = 2.5
+        main.Transparency = 0.05
+        main.Visible = false
+        main.ZIndex = 2
+        tpLineMain = main
+    end
+end
+
+local function hideTeleportLine()
+    if tpLineGlow then tpLineGlow.Visible = false end
+    if tpLineMain then tpLineMain.Visible = false end
+end
+
+local function isGuiObjectVisible(obj)
+    local node = obj
+    while node do
+        if node:IsA("GuiObject") and not node.Visible then return false end
+        if node:IsA("ScreenGui") and not node.Enabled then return false end
+        node = node.Parent
+    end
+    return true
+end
+
+local function pointInside(gui, pos)
+    if not gui or not gui.Visible then return false end
+    local p, s = gui.AbsolutePosition, gui.AbsoluteSize
+    return pos.X >= p.X and pos.X <= p.X + s.X and pos.Y >= p.Y and pos.Y <= p.Y + s.Y
+end
+
+local function isPointOverUI(pos)
+    if pointInside(tpFrame, pos) or pointInside(tpConfirm, pos) then return true end
+    if pointInside(TpFloatingBtn, pos) or pointInside(FloatingBtn, pos) or pointInside(OpenBtn, pos) then return true end
+
+    local main = Win and Win.main
+    if main and main.Visible and pointInside(main, pos) then return true end
+
+    local containers = {}
+    local playerGui = Player:FindFirstChild("PlayerGui")
+    if playerGui then table.insert(containers, playerGui) end
+    local okCore, coreGui = pcall(function() return CoreGui end)
+    if okCore and coreGui then table.insert(containers, coreGui) end
+
+    for _, container in ipairs(containers) do
+        local ok, objects = pcall(function() return container:GetGuiObjectsAtPosition(pos.X, pos.Y) end)
+        if ok and type(objects) == "table" then
+            for _, obj in ipairs(objects) do
+                if (obj:IsA("GuiButton") or obj:IsA("TextBox")) and isGuiObjectVisible(obj) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function clearTeleportSelection()
+    tpSelection.pending = nil
+    tpSelection.lastTapAt = 0
+    tpSelection.activeInput = nil
+    tpSelection.moved = false
+    tpConfirm.Visible = false
+    tpMarkerGui.Enabled = false
+    hideTeleportLine()
+end
+CancelTeleportSelection = clearTeleportSelection
+
+local function performTeleport()
+    local pending = tpSelection.pending
+    if not pending then
+        notifyTp("⚠️ Teleporte", "Nenhum destino selecionado.")
+        return false
+    end
+
     local char = Player.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    local pos = input.Position
-    local ray = Camera:ViewportPointToRay(pos.X, pos.Y)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not (root and hum) or hum.Health <= 0 then
+        notifyTp("⚠️ Teleporte", "Personagem indisponível.")
+        return false
+    end
+
+    local maxDistance = tonumber(getgenv().SystemConfig.ClickTeleportMaxDistance) or TP_DEFAULT_MAX_DISTANCE
+    if (pending.position - root.Position).Magnitude > maxDistance then
+        clearTeleportSelection()
+        notifyTp("⚠️ Teleporte", "Destino fora do alcance máximo.")
+        return false
+    end
+
+    local ok = pcall(function()
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.CFrame = CFrame.new(pending.position)
+    end)
+
+    if not ok then
+        notifyTp("⚠️ Teleporte", "Não foi possível teleportar para esse local.")
+        return false
+    end
+
+    clearTeleportSelection()
+    WarcoreUI:Notify({ Title = "✅ Teleportado", Content = "Destino alcançado com sucesso.", Duration = 2 })
+    return true
+end
+
+local function resolveDestination(tapPos)
+    local char = Player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not (char and hum and root) or hum.Health <= 0 then
+        return nil, "Personagem indisponível."
+    end
+
+    local ray = Camera:ViewportPointToRay(tapPos.X, tapPos.Y)
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
     params.FilterDescendantsInstances = { char }
-    local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
-    local targetPos = result and (result.Position + Vector3.new(0, 3, 0)) or (ray.Origin + ray.Direction * 60)
-    hrp.CFrame = CFrame.new(targetPos)
+    local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+    if not hit then
+        return nil, "Nada sólido no local tocado."
+    end
+
+    local hitChar = hit.Instance:FindFirstAncestorOfClass("Model")
+    if hitChar and hitChar ~= char and hitChar:FindFirstChildOfClass("Humanoid") then
+        return nil, "Escolha uma superfície livre, não um personagem."
+    end
+    if hit.Material == Enum.Material.Water then
+        return nil, "Não é possível teleportar para a água."
+    end
+    if hit.Normal.Y < 0.5 then
+        return nil, "Toque em uma superfície plana e segura."
+    end
+
+    local probe = hit.Position + Vector3.new(0, 8, 0)
+    local ground = workspace:Raycast(probe, Vector3.new(0, -20, 0), params)
+    if not ground then
+        return nil, "Sem piso válido nesse destino."
+    end
+    if probe.Y - ground.Position.Y > 12 then
+        return nil, "Destino alto demais ou sem chão próximo."
+    end
+
+    local target = ground.Position + Vector3.new(0, 3.2, 0)
+    local maxDistance = tonumber(getgenv().SystemConfig.ClickTeleportMaxDistance) or TP_DEFAULT_MAX_DISTANCE
+    if (target - root.Position).Magnitude > maxDistance then
+        return nil, string.format("Destino muito distante (máx. %d).", maxDistance)
+    end
+
+    local overlap = OverlapParams.new()
+    overlap.FilterType = Enum.RaycastFilterType.Blacklist
+    overlap.FilterDescendantsInstances = { char, tpMarkerPart, ground.Instance }
+    overlap.MaxParts = 25
+    local ok, parts = pcall(function()
+        return workspace:GetPartBoundsInBox(CFrame.new(target), Vector3.new(2, 3.6, 2), overlap)
+    end)
+    if ok and type(parts) == "table" then
+        for _, part in ipairs(parts) do
+            if part:IsA("BasePart") and part.CanCollide then
+                return nil, "Destino bloqueado por uma colisão."
+            end
+        end
+    end
+
+    return target
+end
+
+local function selectDestination(tapPos, immediate)
+    local target, err = resolveDestination(tapPos)
+    if not target then
+        notifyTp("⚠️ Destino inválido", err or "Escolha outro ponto no mapa.")
+        return false
+    end
+
+    tpSelection.pending = { position = target }
+    tpMarkerPart.CFrame = CFrame.new(target)
+    tpMarkerGui.Enabled = true
+
+    local char = Player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local distance = root and (target - root.Position).Magnitude or 0
+    tpConfirmInfo.Text = string.format("%.1f, %.1f, %.1f  •  %.0f studs", target.X, target.Y, target.Z, distance)
+    tpConfirm.Visible = true
+
+    if immediate then
+        performTeleport()
+    end
+    return true
+end
+
+local function handleMapTap(pos)
+    local cfg = getgenv().SystemConfig
+    if not cfg.ClickTeleportEnabled then return end
+
+    if cfg.ClickTeleportDoubleTap == false then
+        selectDestination(pos, true)
+        return
+    end
+
+    local now = os.clock()
+    local dx = pos.X - tpSelection.lastTapPos.X
+    local dy = pos.Y - tpSelection.lastTapPos.Y
+    local isDouble = tpSelection.lastTapAt > 0
+        and (now - tpSelection.lastTapAt) <= TP_DOUBLE_TAP_WINDOW
+        and math.sqrt(dx * dx + dy * dy) <= TP_DOUBLE_TAP_RADIUS
+
+    if isDouble then
+        tpSelection.lastTapAt = 0
+        selectDestination(pos, false)
+    else
+        tpSelection.lastTapAt = now
+        tpSelection.lastTapPos = pos
+    end
+end
+
+local function isMapInput(input)
+    return input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch
+end
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp or not isMapInput(input) then return end
+    if not getgenv().SystemConfig.ClickTeleportEnabled then return end
+    if UserInputService:GetFocusedTextBox() then return end
+    if isPointOverUI(input.Position) then return end
+
+    if tpSelection.activeInput then
+        tpSelection.moved = true
+        return
+    end
+
+    tpSelection.activeInput = input
+    tpSelection.startPos = input.Position
+    tpSelection.startAt = os.clock()
+    tpSelection.moved = false
 end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if not tpSelection.activeInput then return end
+    local followsInput = tpSelection.activeInput == input
+    local followsMouse = input.UserInputType == Enum.UserInputType.MouseMovement
+    if not (followsInput or followsMouse) then return end
+
+    local delta = input.Position - tpSelection.startPos
+    if math.sqrt(delta.X * delta.X + delta.Y * delta.Y) > TP_TAP_MAX_MOVE then
+        tpSelection.moved = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if tpSelection.activeInput ~= input then return end
+
+    local startPos = tpSelection.startPos
+    local elapsed = os.clock() - tpSelection.startAt
+    local moved = tpSelection.moved
+    tpSelection.activeInput = nil
+
+    if not getgenv().SystemConfig.ClickTeleportEnabled then return end
+    if moved or elapsed > TP_TAP_MAX_TIME then return end
+    if UserInputService:GetFocusedTextBox() then return end
+    if isPointOverUI(input.Position) then return end
+
+    local delta = input.Position - startPos
+    if math.sqrt(delta.X * delta.X + delta.Y * delta.Y) > TP_TAP_MAX_MOVE then return end
+    handleMapTap(input.Position)
+end)
+
+local function updateTeleportVisuals()
+    if tpSelection.activeInput and os.clock() - tpSelection.startAt > 2 then
+        tpSelection.activeInput = nil
+    end
+
+    local pending = tpSelection.pending
+    if not pending then
+        tpMarkerGui.Enabled = false
+        hideTeleportLine()
+        return
+    end
+
+    tpMarkerGui.Enabled = true
+    local pulse = 0.5 + 0.5 * math.sin(os.clock() * 5)
+    tpMarkerRing.Size = UDim2.fromScale(0.62 + 0.08 * pulse, 0.62 + 0.08 * pulse)
+    tpMarkerStroke.Transparency = 0.04 + 0.26 * pulse
+    tpMarkerDot.Size = UDim2.fromOffset(6 + 4 * pulse, 6 + 4 * pulse)
+    tpConfirmStroke.Transparency = 0.12 + 0.22 * pulse
+
+    local cfg = getgenv().SystemConfig
+    if not cfg.ClickTeleportShowLine or not tpLineMain then
+        hideTeleportLine()
+        return
+    end
+
+    local char = Player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then
+        hideTeleportLine()
+        return
+    end
+
+    local origin, originOn = Camera:WorldToViewportPoint(root.Position + Vector3.new(0, 1.5, 0))
+    local dest, destOn = Camera:WorldToViewportPoint(pending.position + Vector3.new(0, 1, 0))
+    if not originOn or not destOn or origin.Z <= 0 or dest.Z <= 0 then
+        hideTeleportLine()
+        return
+    end
+
+    local from = Vector2.new(origin.X, origin.Y)
+    local to = Vector2.new(dest.X, dest.Y)
+    tpLineMain.From = from
+    tpLineMain.To = to
+    tpLineMain.Color = TP_NEON
+    tpLineMain.Thickness = 2.5 + pulse * 0.8
+    tpLineMain.Transparency = 0.02
+    tpLineMain.Visible = true
+
+    if tpLineGlow then
+        tpLineGlow.From = from
+        tpLineGlow.To = to
+        tpLineGlow.Color = TP_NEON
+        tpLineGlow.Thickness = 7 + pulse * 2
+        tpLineGlow.Transparency = 0.68 + pulse * 0.12
+        tpLineGlow.Visible = true
+    end
+end
+
+tpTeleportBtn.MouseButton1Click:Connect(performTeleport)
+tpCancelBtn.MouseButton1Click:Connect(clearTeleportSelection)
 
 Player.Idled:Connect(function()
     if not getgenv().SystemConfig.AntiAfkEnabled then return end
@@ -2877,6 +3372,7 @@ RunService.RenderStepped:Connect(function(dt)
     end
 
     updateLines()
+    updateTeleportVisuals()
     Visuals.updateBoxes()
     Visuals.updateFov()
 
