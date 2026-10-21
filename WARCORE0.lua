@@ -322,17 +322,25 @@ end
 --// =============================================
 
 local Theme = {
-    Bg = Color3.fromRGB(12, 14, 22),
-    Bg2 = Color3.fromRGB(17, 20, 30),
-    Card = Color3.fromRGB(23, 27, 40),
-    CardHover = Color3.fromRGB(31, 36, 52),
-    Accent = Color3.fromRGB(0, 170, 255),
-    Accent2 = Color3.fromRGB(140, 90, 255),
-    Text = Color3.fromRGB(235, 240, 250),
-    SubText = Color3.fromRGB(150, 160, 185),
-    Stroke = Color3.fromRGB(44, 51, 71),
-    Good = Color3.fromRGB(0, 214, 130),
-    Bad = Color3.fromRGB(233, 70, 70),
+    -- WARCORE // TACTICAL EMBER
+    Bg = Color3.fromRGB(9, 11, 8),
+    Bg2 = Color3.fromRGB(14, 17, 12),
+    Card = Color3.fromRGB(19, 23, 16),
+    CardHover = Color3.fromRGB(29, 35, 22),
+    Accent = Color3.fromRGB(183, 255, 61),
+    Accent2 = Color3.fromRGB(255, 106, 26),
+    Accent3 = Color3.fromRGB(92, 255, 214),
+    Text = Color3.fromRGB(235, 243, 224),
+    SubText = Color3.fromRGB(132, 146, 114),
+    Stroke = Color3.fromRGB(38, 46, 31),
+    Grid = Color3.fromRGB(120, 150, 90),
+    Good = Color3.fromRGB(124, 255, 90),
+    Warn = Color3.fromRGB(255, 196, 64),
+    Bad = Color3.fromRGB(255, 77, 61),
+    Title = Enum.Font.GothamBlack,
+    Body = Enum.Font.GothamMedium,
+    Strong = Enum.Font.GothamBold,
+    Mono = Enum.Font.Code,
 }
 
 local UIParent
@@ -380,6 +388,108 @@ local function Stroke(parent, color, thickness, transparency)
     return s
 end
 
+-- Cantos de HUD (brackets) - assinatura visual WARCORE
+local function AddBrackets(parent, color, size, thickness, inset, transparency, zIndex)
+    color = color or Theme.Accent
+    size = size or 14
+    thickness = thickness or 2
+    inset = inset or 0
+    transparency = transparency or 0
+    zIndex = zIndex or 15
+    local function arm(pos, dim)
+        return New("Frame", {
+            Size = dim,
+            Position = pos,
+            BackgroundColor3 = color,
+            BackgroundTransparency = transparency,
+            BorderSizePixel = 0,
+            ZIndex = zIndex,
+        }, parent)
+    end
+    local s = size
+    local t = thickness
+    -- topo-esquerda
+    arm(UDim2.new(0, inset, 0, inset), UDim2.new(0, s, 0, t))
+    arm(UDim2.new(0, inset, 0, inset), UDim2.new(0, t, 0, s))
+    -- topo-direita
+    arm(UDim2.new(1, -inset - s, 0, inset), UDim2.new(0, s, 0, t))
+    arm(UDim2.new(1, -inset - t, 0, inset), UDim2.new(0, t, 0, s))
+    -- base-esquerda
+    arm(UDim2.new(0, inset, 1, -inset - t), UDim2.new(0, s, 0, t))
+    arm(UDim2.new(0, inset, 1, -inset - s), UDim2.new(0, t, 0, s))
+    -- base-direita
+    arm(UDim2.new(1, -inset - s, 1, -inset - t), UDim2.new(0, s, 0, t))
+    arm(UDim2.new(1, -inset - t, 1, -inset - s), UDim2.new(0, t, 0, s))
+end
+
+-- Linhas de varredura (efeito CRT/HUD)
+local function AddScanlines(parent, spacing, color, transparency, zIndex)
+    spacing = spacing or 5
+    local holder = New("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        ZIndex = zIndex or 12,
+    }, parent)
+    for y = 0, 720, spacing do
+        New("Frame", {
+            Size = UDim2.new(1, 0, 0, 1),
+            Position = UDim2.new(0, 0, 0, y),
+            BackgroundColor3 = color or Theme.Text,
+            BackgroundTransparency = transparency or 0.95,
+            BorderSizePixel = 0,
+            ZIndex = zIndex or 12,
+        }, holder)
+    end
+    return holder
+end
+
+-- Grade tática de fundo
+local function AddGrid(parent, step, color, transparency, zIndex)
+    step = step or 44
+    local holder = New("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        ZIndex = zIndex or 9,
+    }, parent)
+    for x = step, 920, step do
+        New("Frame", {
+            Size = UDim2.new(0, 1, 1, 0),
+            Position = UDim2.new(0, x, 0, 0),
+            BackgroundColor3 = color or Theme.Grid,
+            BackgroundTransparency = transparency or 0.95,
+            BorderSizePixel = 0,
+            ZIndex = zIndex or 9,
+        }, holder)
+    end
+    for y = step, 920, step do
+        New("Frame", {
+            Size = UDim2.new(1, 0, 0, 1),
+            Position = UDim2.new(0, 0, 0, y),
+            BackgroundColor3 = color or Theme.Grid,
+            BackgroundTransparency = transparency or 0.95,
+            BorderSizePixel = 0,
+            ZIndex = zIndex or 9,
+        }, holder)
+    end
+    return holder
+end
+
+-- Marca lateral dos controles
+local function AddRowMark(row, color, transparency)
+    local mark = New("Frame", {
+        Size = UDim2.new(0, 3, 1, -20),
+        Position = UDim2.new(0, 0, 0, 10),
+        BackgroundColor3 = color or Theme.Stroke,
+        BackgroundTransparency = transparency or 0,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+    }, row)
+    New("UICorner", mark).CornerRadius = UDim.new(1, 0)
+    return mark
+end
+
 local function fmtNum(v)
     if v % 1 == 0 then
         return tostring(math.floor(v))
@@ -411,12 +521,12 @@ local function Notify(_, cfg)
         Position = UDim2.new(1, 30, 0, 0),
         LayoutOrder = os.time(),
     }, NotifyContainer)
-    Corner(card, 10)
+    Corner(card, 5)
     local stroke = Stroke(card, Theme.Accent, 1.5, 1)
 
     local bar = New("Frame", {
-        Size = UDim2.new(0, 4, 1, -18),
-        Position = UDim2.new(0, 8, 0, 9),
+        Size = UDim2.new(0, 3, 1, -24),
+        Position = UDim2.new(0, 10, 0, 12),
         BackgroundColor3 = Theme.Accent,
         BorderSizePixel = 0,
         BackgroundTransparency = 1,
@@ -425,24 +535,24 @@ local function Notify(_, cfg)
 
     local title = New("TextLabel", {
         Size = UDim2.new(1, -28, 0, 22),
-        Position = UDim2.new(0, 20, 0, 8),
+        Position = UDim2.new(0, 21, 0, 8),
         BackgroundTransparency = 1,
-        Text = cfg.Title or "WARCORE",
+        Text = "// " .. (cfg.Title or "WARCORE"),
         TextColor3 = Theme.Text,
-        Font = Enum.Font.GothamBold,
-        TextSize = 14,
+        Font = Theme.Mono,
+        TextSize = 12,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTransparency = 1,
     }, card)
 
     local content = New("TextLabel", {
         Size = UDim2.new(1, -28, 0, 24),
-        Position = UDim2.new(0, 20, 0, 30),
+        Position = UDim2.new(0, 21, 0, 30),
         BackgroundTransparency = 1,
         Text = cfg.Content or "",
         TextColor3 = Theme.SubText,
-        Font = Enum.Font.GothamMedium,
-        TextSize = 12,
+        Font = Theme.Mono,
+        TextSize = 11,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Top,
         TextWrapped = true,
@@ -582,6 +692,7 @@ local function CreateSliderControl(parent, opts, order)
 end
 
 -- Toggle
+local ToggleControls = {}
 local function CreateToggleControl(parent, opts, order)
     local row = New("Frame", {
         Name = "Toggle_" .. (opts.Name or ""),
@@ -645,7 +756,9 @@ local function CreateToggleControl(parent, opts, order)
     end)
 
     render(false)
-    return { Set = function(_, v) state = v and true or false; render(true) end }
+    local control = { Set = function(_, v) state = v and true or false; render(true) end }
+    table.insert(ToggleControls, control)
+    return control
 end
 
 --// ----- KEYBINDS -----
@@ -846,6 +959,7 @@ local function ShowModal(title, builder)
 end
 
 -- Janela principal
+local FullShutdown
 local Window = {}
 Window.__index = Window
 
@@ -1330,7 +1444,13 @@ local function CreateWindow(cfg)
     Window.isOpen = function() return isOpen end
 
     minBtn.MouseButton1Click:Connect(closeWin)
-    closeBtn.MouseButton1Click:Connect(closeWin)
+    closeBtn.MouseButton1Click:Connect(function()
+        if FullShutdown then
+            FullShutdown()
+        else
+            closeWin()
+        end
+    end)
     MakeDraggable(header, main)
 
     return Window
@@ -2953,6 +3073,102 @@ local function applyRuntimeState()
     if cfg.NoClipEnabled then startNoClip() end
 
     animateBtn(TpFloatingBtn, cfg.TeleportEnabled)
+end
+
+--// =============================================
+--// DESLIGAMENTO TOTAL (BOTÃO ×)
+--// Fecha o menu, desativa todos os sistemas e restaura o jogo.
+--// =============================================
+FullShutdown = function()
+    local cfg = getgenv().SystemConfig
+
+    -- Fecha painéis abertos
+    isTeleportOpen = false
+    toggleMenu(false)
+    for _, child in ipairs(NotifyContainer:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+
+    -- Encerra sistemas ativos
+    Actions.setMira(false)
+    Actions.setFly(false)
+    Actions.setNoClip(false)
+    Actions.setSpeed(false)
+    Actions.setTeleport(false)
+
+    -- Desliga todas as flags de recurso
+    local featureKeys = {
+        "MiraAtiva",
+        "HighlightEnabled", "DotEnabled", "LineEnabled",
+        "LineOutline", "LinePulse",
+        "MicroHpEnabled", "MicroDistEnabled",
+        "EspBoxEnabled", "EspHealthEnabled", "FovCircleEnabled",
+        "FullBright", "NoShadows", "ClarezaMod", "ClockOverrideEnabled",
+        "ShowFPS", "ShowPlayers",
+        "FlyEnabled", "FlyInfinite", "SpeedEnabled",
+        "JumpEnabled", "InfiniteJump", "NoClipEnabled",
+        "TeleportEnabled", "ClickTeleportEnabled",
+        "AntiAfkEnabled",
+    }
+    for _, key in ipairs(featureKeys) do
+        cfg[key] = false
+    end
+
+    -- Limpa overlays imediatamente
+    for _, tracer in pairs(Lines) do
+        for _, seg in ipairs(tracer.segs) do seg.Visible = false end
+        if tracer.outline then tracer.outline.Visible = false end
+    end
+    for _, box in pairs(Visuals.Boxes) do
+        for _, drawing in pairs(box) do
+            if drawing.Visible ~= nil then drawing.Visible = false end
+        end
+    end
+    if Visuals.FovCircle then Visuals.FovCircle.Visible = false end
+    fpsF.Visible = false
+    countF.Visible = false
+
+    -- Remove marcações dos personagens
+    for _, p in ipairs(Players:GetPlayers()) do
+        local char = p.Character
+        if char then
+            local hl = char:FindFirstChild("System_HL")
+            if hl then hl.Enabled = false end
+            local head = char:FindFirstChild("Head")
+            local dot = head and head:FindFirstChild("System_Dot")
+            if dot then dot.Enabled = false end
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local hud = root and root:FindFirstChild("Aguia_MicroHUD")
+            if hud then hud.Enabled = false end
+        end
+    end
+
+    -- Restaura iluminação original
+    Lighting.Ambient = OriginalSettings.Ambient
+    Lighting.OutdoorAmbient = OriginalSettings.OutdoorAmbient
+    Lighting.Brightness = OriginalSettings.Brightness
+    Lighting.ExposureCompensation = OriginalSettings.Exposure
+    Lighting.ClockTime = OriginalSettings.ClockTime
+    Lighting.GlobalShadows = OriginalSettings.GlobalShadows
+
+    -- Restaura o personagem
+    local char = Player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = OriginalWalkSpeed
+        hum.JumpPower = OriginalJumpPower
+        hum.PlatformStand = false
+    end
+
+    ActiveSlider = nil
+
+    -- Sincroniza todos os toggles da interface
+    for _, control in ipairs(ToggleControls) do
+        pcall(function() control:Set(false) end)
+    end
+
+    -- Minimiza/oculta o menu
+    Win.close()
 end
 
 applyRuntimeState()
