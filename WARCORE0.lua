@@ -98,6 +98,16 @@ getgenv().SystemConfig = {
     ClickTeleportShowLine = true,
     ClickTeleportMaxDistance = 500,
 
+    -- Destino salvo (persistido no autosave)
+    SavedDestinationActive = false,
+    SavedDestinationX = 0,
+    SavedDestinationY = 0,
+    SavedDestinationZ = 0,
+    SavedDestinationName = "",
+
+    -- Anti-Void / Recuperação de posição
+    AntiVoidEnabled = false,
+
     -- Utilidade
     AntiAfkEnabled = false,
     ClockOverrideEnabled = false,
@@ -2630,6 +2640,32 @@ MovimentTab:CreateToggle({
 })
 
 --// ----- ABA TELEPORTE -----
+local TP_DISTANCE_OPTIONS = {
+    { label = "Curto • 150 studs", value = 150 },
+    { label = "Médio • 300 studs", value = 300 },
+    { label = "Longo • 500 studs", value = 500 },
+    { label = "Muito longo • 1000 studs", value = 1000 },
+    { label = "Sem limite (script)", value = 0 },
+}
+local TP_DISTANCE_LABELS = {}
+for _, opt in ipairs(TP_DISTANCE_OPTIONS) do
+    table.insert(TP_DISTANCE_LABELS, opt.label)
+end
+local function tpDistanceLabel(value)
+    local v = tonumber(value)
+    for _, opt in ipairs(TP_DISTANCE_OPTIONS) do
+        if opt.value == v then return opt.label end
+    end
+    if v then return string.format("%d studs", v) end
+    return "Longo • 500 studs"
+end
+local function tpDistanceValueFromLabel(label)
+    for _, opt in ipairs(TP_DISTANCE_OPTIONS) do
+        if opt.label == label then return opt.value end
+    end
+    return 500
+end
+
 TeleportTab:CreateSection("Painel de Teleporte")
 UIRefs.TeleportEnabled = TeleportTab:CreateToggle({
     Name = "Ativar Sistema de Teleporte",
@@ -2650,7 +2686,12 @@ TeleportTab:CreateToggle({
     CurrentValue = getgenv().SystemConfig.ClickTeleportEnabled,
     Callback = function(v)
         getgenv().SystemConfig.ClickTeleportEnabled = v
-        if not v and CancelTeleportSelection then CancelTeleportSelection() end
+        if CancelTeleportSelection then CancelTeleportSelection() end
+        WarcoreUI:Notify({
+            Title = v and "✅ Teleporte por Toque" or "⛔ Teleporte por Toque",
+            Content = v and "LIGADO. Duplo toque no mapa para escolher o destino." or "DESLIGADO. Toques no mapa serão ignorados.",
+            Duration = 2.5,
+        })
     end
 })
 TeleportTab:CreateToggle({
@@ -2665,6 +2706,20 @@ TeleportTab:CreateToggle({
     Name = "Linha Verde Neon até o Destino",
     CurrentValue = getgenv().SystemConfig.ClickTeleportShowLine,
     Callback = function(v) getgenv().SystemConfig.ClickTeleportShowLine = v end
+})
+TeleportTab:CreateDropdown({
+    Name = "Distância Máxima por Toque",
+    Options = TP_DISTANCE_LABELS,
+    CurrentOption = tpDistanceLabel(getgenv().SystemConfig.ClickTeleportMaxDistance),
+    Callback = function(option)
+        local value = tpDistanceValueFromLabel(option)
+        getgenv().SystemConfig.ClickTeleportMaxDistance = value
+        if value == 0 then
+            WarcoreUI:Notify({ Title = "📏 Distância", Content = "Sem limite imposto pelo script. O jogo ainda pode bloquear destinos.", Duration = 3 })
+        else
+            WarcoreUI:Notify({ Title = "📏 Distância", Content = string.format("Limite definido para %d studs.", value), Duration = 2 })
+        end
+    end
 })
 TeleportTab:CreateButton({
     Name = "Teleportar até o Inimigo Mais Próximo",
@@ -2935,10 +2990,18 @@ local function notifyTp(title, content)
     WarcoreUI:Notify({ Title = title, Content = content, Duration = 2.5 })
 end
 
+local TP_UNLIMITED_DISTANCE = 0
+
 local function getTeleportMaxDistance()
     local value = tonumber(getgenv().SystemConfig.ClickTeleportMaxDistance)
-    if not value or value <= 0 then value = TP_DEFAULT_MAX_DISTANCE end
+    if not value or value < 0 then value = TP_DEFAULT_MAX_DISTANCE end
+    if value == TP_UNLIMITED_DISTANCE then return math.huge end
     return value
+end
+
+local function formatDistanceLimit(maxDistance)
+    if maxDistance == math.huge then return "sem limite do script" end
+    return string.format("%d studs", maxDistance)
 end
 
 local tpConfirm = New("Frame", {
@@ -3147,6 +3210,17 @@ local function clearTeleportSelection()
 end
 CancelTeleportSelection = clearTeleportSelection
 
+local function teleportToPosition(target)
+    local char = Player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    return (pcall(function()
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.CFrame = CFrame.new(target)
+    end))
+end
+
 local function performTeleport()
     local pending = tpSelection.pending
     if not pending then
@@ -3166,17 +3240,11 @@ local function performTeleport()
     local distance = (pending.position - root.Position).Magnitude
     if distance > maxDistance then
         clearTeleportSelection()
-        notifyTp("⚠️ Teleporte", string.format("Destino a %.0f studs (máx. %d). Aproxime-se e tente de novo.", distance, maxDistance))
+        notifyTp("⚠️ Teleporte", string.format("Destino a %.0f studs (máx. %s). Aproxime-se e tente de novo.", distance, formatDistanceLimit(maxDistance)))
         return false
     end
 
-    local ok = pcall(function()
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-        root.CFrame = CFrame.new(pending.position)
-    end)
-
-    if not ok then
+    if not teleportToPosition(pending.position) then
         notifyTp("⚠️ Teleporte", "Não foi possível teleportar para esse local.")
         return false
     end
@@ -3184,6 +3252,30 @@ local function performTeleport()
     clearTeleportSelection()
     WarcoreUI:Notify({ Title = "✅ Teleportado", Content = "Destino alcançado com sucesso.", Duration = 2 })
     return true
+end
+
+local function isDestinationBlocked(target, ignoreList)
+    local overlap = OverlapParams.new()
+    overlap.FilterType = Enum.RaycastFilterType.Blacklist
+    local list = { Player.Character, tpMarkerPart }
+    if ignoreList then
+        for _, item in ipairs(ignoreList) do
+            if item then table.insert(list, item) end
+        end
+    end
+    overlap.FilterDescendantsInstances = list
+    overlap.MaxParts = 25
+    local ok, parts = pcall(function()
+        return workspace:GetPartBoundsInBox(CFrame.new(target), Vector3.new(2, 3.6, 2), overlap)
+    end)
+    if ok and type(parts) == "table" then
+        for _, part in ipairs(parts) do
+            if part:IsA("BasePart") and part.CanCollide then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function resolveDestination(tapPos)
@@ -3226,25 +3318,50 @@ local function resolveDestination(tapPos)
     local target = ground.Position + Vector3.new(0, 3.2, 0)
     local maxDistance = getTeleportMaxDistance()
     if (target - root.Position).Magnitude > maxDistance then
-        return nil, string.format("Destino a mais de %d studs. Escolha um ponto mais próximo.", maxDistance)
+        return nil, string.format("Destino a mais de %s. Escolha um ponto mais próximo.", formatDistanceLimit(maxDistance))
     end
 
-    local overlap = OverlapParams.new()
-    overlap.FilterType = Enum.RaycastFilterType.Blacklist
-    overlap.FilterDescendantsInstances = { char, tpMarkerPart, ground.Instance }
-    overlap.MaxParts = 25
-    local ok, parts = pcall(function()
-        return workspace:GetPartBoundsInBox(CFrame.new(target), Vector3.new(2, 3.6, 2), overlap)
-    end)
-    if ok and type(parts) == "table" then
-        for _, part in ipairs(parts) do
-            if part:IsA("BasePart") and part.CanCollide then
-                return nil, "Destino bloqueado por uma colisão."
-            end
-        end
+    if isDestinationBlocked(target, { ground.Instance }) then
+        return nil, "Destino bloqueado por uma colisão."
     end
 
     return target
+end
+
+local function validateDestinationPoint(target)
+    local char = Player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not (char and hum and root) or hum.Health <= 0 then
+        return false, "Personagem indisponível."
+    end
+
+    local maxDistance = getTeleportMaxDistance()
+    local distance = (target - root.Position).Magnitude
+    if distance > maxDistance then
+        return false, string.format("Destino a %.0f studs (máx. %s). Aproxime-se e tente de novo.", distance, formatDistanceLimit(maxDistance))
+    end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = { char, tpMarkerPart }
+    local probe = target + Vector3.new(0, 8, 0)
+    local ground = workspace:Raycast(probe, Vector3.new(0, -30, 0), params)
+    if not ground then
+        return false, "Sem piso válido nesse destino."
+    end
+    if ground.Material == Enum.Material.Water then
+        return false, "Destino sobre a água."
+    end
+    if probe.Y - ground.Position.Y > 14 then
+        return false, "Destino alto demais ou sem chão próximo."
+    end
+
+    if isDestinationBlocked(target, { ground.Instance }) then
+        return false, "Destino bloqueado por um prédio ou obstáculo."
+    end
+
+    return true
 end
 
 local function selectDestination(tapPos, immediate)
@@ -3439,6 +3556,205 @@ Player.Idled:Connect(function()
     end)
 end)
 
+--// =============================================
+--// DESTINO SALVO + ANTI-VOID (RECUPERAÇÃO DE POSIÇÃO)
+--// =============================================
+local tpSavedUI = { info = nil, lastAt = 0 }
+
+local function getSavedDestination()
+    local cfg = getgenv().SystemConfig
+    if not cfg.SavedDestinationActive then return nil end
+    return Vector3.new(cfg.SavedDestinationX or 0, cfg.SavedDestinationY or 0, cfg.SavedDestinationZ or 0)
+end
+
+local function setSavedDestination(pos, name)
+    local cfg = getgenv().SystemConfig
+    cfg.SavedDestinationX = pos.X
+    cfg.SavedDestinationY = pos.Y
+    cfg.SavedDestinationZ = pos.Z
+    cfg.SavedDestinationName = name or "Destino salvo"
+    cfg.SavedDestinationActive = true
+end
+
+local function clearSavedDestination()
+    local cfg = getgenv().SystemConfig
+    cfg.SavedDestinationActive = false
+    cfg.SavedDestinationX = 0
+    cfg.SavedDestinationY = 0
+    cfg.SavedDestinationZ = 0
+    cfg.SavedDestinationName = ""
+end
+
+local function renderSavedDestinationUI(force)
+    if not tpSavedUI.info then return end
+    local now = os.clock()
+    if not force and now - tpSavedUI.lastAt < 0.25 then return end
+    tpSavedUI.lastAt = now
+
+    local target = getSavedDestination()
+    if not target then
+        tpSavedUI.info.Text = "📌 Nenhum destino salvo."
+        return
+    end
+
+    local root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    local text = string.format("📌 Salvo: %.1f, %.1f, %.1f", target.X, target.Y, target.Z)
+    if root then
+        text = text .. string.format("  •  %.0f studs", (target - root.Position).Magnitude)
+    end
+    tpSavedUI.info.Text = text
+end
+
+local function getVoidThreshold()
+    local height = workspace.FallenPartsDestroyHeight
+    if type(height) ~= "number" then return nil end
+    if height <= -100000 then return nil end
+    return height + 50
+end
+
+local antiVoid = {
+    lastSafe = nil,
+    lastSaveAt = 0,
+    cooldownUntil = 0,
+    warned = false,
+}
+
+local function resetAntiVoidState()
+    antiVoid.lastSafe = nil
+    antiVoid.lastSaveAt = 0
+    antiVoid.cooldownUntil = 0
+    antiVoid.warned = false
+end
+
+local function updateAntiVoidRecovery()
+    if not getgenv().SystemConfig.AntiVoidEnabled then return end
+    if getgenv().SystemConfig.FlyEnabled then return end
+
+    local threshold = getVoidThreshold()
+    if not threshold then return end
+
+    local char = Player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not (hum and root) or hum.Health <= 0 then return end
+
+    local now = os.clock()
+    local pos = root.Position
+
+    if pos.Y > threshold then
+        if now - antiVoid.lastSaveAt >= 0.5 then
+            antiVoid.lastSaveAt = now
+            local velocity = root.AssemblyLinearVelocity
+            local fallSpeed = velocity and math.abs(velocity.Y) or 0
+            local grounded = hum.FloorMaterial ~= Enum.Material.Air
+            if pos.Y > threshold + 15 and (grounded or fallSpeed < 25) then
+                antiVoid.lastSafe = pos
+            end
+        end
+        return
+    end
+
+    if now < antiVoid.cooldownUntil then return end
+
+    if not antiVoid.lastSafe then
+        if not antiVoid.warned then
+            antiVoid.warned = true
+            notifyTp("🛟 Anti-Void", "Sem posição segura registrada para recuperação.")
+        end
+        return
+    end
+
+    antiVoid.cooldownUntil = now + 3
+    antiVoid.warned = false
+    if teleportToPosition(antiVoid.lastSafe + Vector3.new(0, 2, 0)) then
+        notifyTp("🛟 Anti-Void", "Você foi recuperado para a última posição segura.")
+    else
+        notifyTp("⚠️ Anti-Void", "Não foi possível recuperar (o jogo pode ter bloqueado).")
+    end
+end
+
+local function saveCurrentDestination()
+    local char = Player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not (hum and root) or hum.Health <= 0 then
+        notifyTp("⚠️ Destino Salvo", "Personagem indisponível para salvar a posição.")
+        return
+    end
+
+    local pos = tpSelection.pending and tpSelection.pending.position or root.Position
+    local threshold = getVoidThreshold()
+    if threshold and pos.Y <= threshold + 5 then
+        notifyTp("⚠️ Destino Salvo", "A posição está na zona de queda e não foi salva.")
+        return
+    end
+
+    setSavedDestination(pos, "Destino salvo")
+    renderSavedDestinationUI(true)
+    notifyTp("📌 Destino Salvo", string.format("Guardado em %.1f, %.1f, %.1f.", pos.X, pos.Y, pos.Z))
+end
+
+local function goToSavedDestination()
+    local target = getSavedDestination()
+    if not target then
+        notifyTp("⚠️ Destino Salvo", "Nenhum destino salvo ainda.")
+        return
+    end
+
+    local ok, err = validateDestinationPoint(target)
+    if not ok then
+        notifyTp("⚠️ Destino Salvo", (err or "Destino inválido.") .. " Tente outro local.")
+        return
+    end
+
+    if teleportToPosition(target) then
+        notifyTp("✅ Destino Salvo", "Você foi para o destino salvo.")
+    else
+        notifyTp("⚠️ Destino Salvo", "Não foi possível teleportar (o jogo pode ter bloqueado).")
+    end
+end
+
+local function deleteSavedDestination()
+    if not getSavedDestination() then
+        notifyTp("⚠️ Destino Salvo", "Nenhum destino salvo para apagar.")
+        return
+    end
+    clearSavedDestination()
+    renderSavedDestinationUI(true)
+    notifyTp("🗑️ Destino Salvo", "Destino salvo removido.")
+end
+
+TeleportTab:CreateSection("📌 Destino Salvo")
+tpSavedUI.info = TeleportTab:CreateSection("📌 Nenhum destino salvo.")
+TeleportTab:CreateButton({
+    Name = "SALVAR DESTINO",
+    Callback = saveCurrentDestination,
+})
+TeleportTab:CreateButton({
+    Name = "IR PARA DESTINO SALVO",
+    Callback = goToSavedDestination,
+})
+TeleportTab:CreateButton({
+    Name = "APAGAR DESTINO",
+    Callback = deleteSavedDestination,
+})
+renderSavedDestinationUI(true)
+
+TeleportTab:CreateSection("🛟 ANTI-VOID • Recuperação de Posição")
+TeleportTab:CreateToggle({
+    Name = "Ativar ANTI-VOID (recupera a última posição segura)",
+    CurrentValue = getgenv().SystemConfig.AntiVoidEnabled,
+    Callback = function(v)
+        getgenv().SystemConfig.AntiVoidEnabled = v
+        resetAntiVoidState()
+        if v then
+            WarcoreUI:Notify({ Title = "🛟 Anti-Void", Content = "LIGADO. Monitorando quedas para fora do mapa.", Duration = 2.5 })
+        else
+            WarcoreUI:Notify({ Title = "🛟 Anti-Void", Content = "DESLIGADO.", Duration = 2 })
+        end
+    end
+})
+
 local function getLineOrigin()
     local vp = Camera.ViewportSize
     local mode = getgenv().SystemConfig.LineOrigin
@@ -3544,6 +3860,8 @@ RunService.RenderStepped:Connect(function(dt)
 
     updateLines()
     updateTeleportVisuals()
+    updateAntiVoidRecovery()
+    renderSavedDestinationUI()
     Visuals.updateBoxes()
     Visuals.updateFov()
 
@@ -3703,6 +4021,7 @@ end)
 -- CharacterAdded
 Player.CharacterAdded:Connect(function(char)
     if CancelTeleportSelection then CancelTeleportSelection() end
+    resetAntiVoidState()
     task.wait(0.6)
     local hum = char:WaitForChild("Humanoid", 5)
     if hum then
