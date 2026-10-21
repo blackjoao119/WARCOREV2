@@ -2914,28 +2914,31 @@ end
 --// TELEPORTE POR TOQUE + ANTI-AFK
 --// =============================================
 local TP_NEON = Color3.fromRGB(57, 255, 20)
-local TP_DOUBLE_TAP_WINDOW = 0.38
-local TP_DOUBLE_TAP_RADIUS = 56
-local TP_TAP_MAX_TIME = 0.28
-local TP_TAP_MAX_MOVE = 12
+local TP_DOUBLE_TAP_WINDOW = 0.5
+local TP_DOUBLE_TAP_RADIUS = 72
+local TP_TAP_MAX_TIME = 0.35
+local TP_TAP_MAX_MOVE = 16
+local TP_INPUT_STALE_TIME = 1.5
 local TP_DEFAULT_MAX_DISTANCE = 500
 
 local tpSelection = {
     pending = nil,
     lastTapAt = 0,
     lastTapPos = Vector2.new(),
-    activeInput = nil,
+    activeType = nil,
     startPos = Vector2.new(),
     startAt = 0,
     moved = false,
 }
 
-local tpNotifyAt = 0
 local function notifyTp(title, content)
-    local now = os.clock()
-    if now - tpNotifyAt < 1 then return end
-    tpNotifyAt = now
     WarcoreUI:Notify({ Title = title, Content = content, Duration = 2.5 })
+end
+
+local function getTeleportMaxDistance()
+    local value = tonumber(getgenv().SystemConfig.ClickTeleportMaxDistance)
+    if not value or value <= 0 then value = TP_DEFAULT_MAX_DISTANCE end
+    return value
 end
 
 local tpConfirm = New("Frame", {
@@ -3136,7 +3139,7 @@ end
 local function clearTeleportSelection()
     tpSelection.pending = nil
     tpSelection.lastTapAt = 0
-    tpSelection.activeInput = nil
+    tpSelection.activeType = nil
     tpSelection.moved = false
     tpConfirm.Visible = false
     tpMarkerGui.Enabled = false
@@ -3159,10 +3162,11 @@ local function performTeleport()
         return false
     end
 
-    local maxDistance = tonumber(getgenv().SystemConfig.ClickTeleportMaxDistance) or TP_DEFAULT_MAX_DISTANCE
-    if (pending.position - root.Position).Magnitude > maxDistance then
+    local maxDistance = getTeleportMaxDistance()
+    local distance = (pending.position - root.Position).Magnitude
+    if distance > maxDistance then
         clearTeleportSelection()
-        notifyTp("⚠️ Teleporte", "Destino fora do alcance máximo.")
+        notifyTp("⚠️ Teleporte", string.format("Destino a %.0f studs (máx. %d). Aproxime-se e tente de novo.", distance, maxDistance))
         return false
     end
 
@@ -3220,9 +3224,9 @@ local function resolveDestination(tapPos)
     end
 
     local target = ground.Position + Vector3.new(0, 3.2, 0)
-    local maxDistance = tonumber(getgenv().SystemConfig.ClickTeleportMaxDistance) or TP_DEFAULT_MAX_DISTANCE
+    local maxDistance = getTeleportMaxDistance()
     if (target - root.Position).Magnitude > maxDistance then
-        return nil, string.format("Destino muito distante (máx. %d).", maxDistance)
+        return nil, string.format("Destino a mais de %d studs. Escolha um ponto mais próximo.", maxDistance)
     end
 
     local overlap = OverlapParams.new()
@@ -3246,11 +3250,13 @@ end
 local function selectDestination(tapPos, immediate)
     local target, err = resolveDestination(tapPos)
     if not target then
-        notifyTp("⚠️ Destino inválido", err or "Escolha outro ponto no mapa.")
+        clearTeleportSelection()
+        notifyTp("⚠️ Destino inválido", (err or "Escolha outro ponto no mapa.") .. " Toque novamente.")
         return false
     end
 
     tpSelection.pending = { position = target }
+    tpSelection.lastTapAt = 0
     tpMarkerPart.CFrame = CFrame.new(target)
     tpMarkerGui.Enabled = true
 
@@ -3302,22 +3308,32 @@ UserInputService.InputBegan:Connect(function(input, gp)
     if UserInputService:GetFocusedTextBox() then return end
     if isPointOverUI(input.Position) then return end
 
-    if tpSelection.activeInput then
-        tpSelection.moved = true
-        return
+    local now = os.clock()
+    if tpSelection.activeType then
+        local sameGesture = input.UserInputType == tpSelection.activeType
+        if sameGesture and (now - tpSelection.startAt) <= TP_TAP_MAX_TIME then
+            tpSelection.moved = true
+            return
+        end
     end
 
-    tpSelection.activeInput = input
+    tpSelection.activeType = input.UserInputType
     tpSelection.startPos = input.Position
-    tpSelection.startAt = os.clock()
+    tpSelection.startAt = now
     tpSelection.moved = false
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if not tpSelection.activeInput then return end
-    local followsInput = tpSelection.activeInput == input
-    local followsMouse = input.UserInputType == Enum.UserInputType.MouseMovement
-    if not (followsInput or followsMouse) then return end
+    local activeType = tpSelection.activeType
+    if not activeType then return end
+
+    if activeType == Enum.UserInputType.MouseButton1 then
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+    elseif activeType == Enum.UserInputType.Touch then
+        if input.UserInputType ~= Enum.UserInputType.Touch then return end
+    else
+        return
+    end
 
     local delta = input.Position - tpSelection.startPos
     if math.sqrt(delta.X * delta.X + delta.Y * delta.Y) > TP_TAP_MAX_MOVE then
@@ -3326,12 +3342,21 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 UserInputService.InputEnded:Connect(function(input)
-    if tpSelection.activeInput ~= input then return end
+    local activeType = tpSelection.activeType
+    if not activeType then return end
+
+    if input.UserInputType ~= activeType then
+        if activeType == Enum.UserInputType.Touch then
+            tpSelection.moved = true
+        end
+        return
+    end
 
     local startPos = tpSelection.startPos
     local elapsed = os.clock() - tpSelection.startAt
     local moved = tpSelection.moved
-    tpSelection.activeInput = nil
+    tpSelection.activeType = nil
+    tpSelection.moved = false
 
     if not getgenv().SystemConfig.ClickTeleportEnabled then return end
     if moved or elapsed > TP_TAP_MAX_TIME then return end
@@ -3344,8 +3369,9 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 local function updateTeleportVisuals()
-    if tpSelection.activeInput and os.clock() - tpSelection.startAt > 2 then
-        tpSelection.activeInput = nil
+    if tpSelection.activeType and os.clock() - tpSelection.startAt > TP_INPUT_STALE_TIME then
+        tpSelection.activeType = nil
+        tpSelection.moved = false
     end
 
     local pending = tpSelection.pending
@@ -3676,6 +3702,7 @@ end)
 
 -- CharacterAdded
 Player.CharacterAdded:Connect(function(char)
+    if CancelTeleportSelection then CancelTeleportSelection() end
     task.wait(0.6)
     local hum = char:WaitForChild("Humanoid", 5)
     if hum then
