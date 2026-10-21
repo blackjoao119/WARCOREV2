@@ -998,7 +998,7 @@ end
 local function CreateWindow(cfg)
     cfg = cfg or {}
     local vp = Camera.ViewportSize
-    local winW = math.clamp(math.floor(vp.X * 0.92), 300, 470)
+    local winW = math.clamp(math.floor(vp.X * 0.94), 300, 520)
     local winH = math.clamp(math.floor(vp.Y * 0.82), 360, 660)
     local baseSize = UDim2.new(0, winW, 0, winH)
 
@@ -1094,53 +1094,169 @@ local function CreateWindow(cfg)
     }, header)
     Corner(closeBtn, 9)
 
-    -- Barra de abas
-    local tabBar = New("ScrollingFrame", {
-        Name = "TabBar",
-        Size = UDim2.new(1, 0, 0, 48),
+    local sidebarW = 62
+    local sidebar = New("ScrollingFrame", {
+        Name = "Sidebar",
+        Size = UDim2.new(0, sidebarW, 1, -56),
         Position = UDim2.new(0, 0, 0, 56),
-        BackgroundTransparency = 1,
+        BackgroundColor3 = Theme.Bg2,
+        BackgroundTransparency = 0.35,
         BorderSizePixel = 0,
-        ScrollBarThickness = 0,
-        ScrollingDirection = Enum.ScrollingDirection.X,
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = Theme.Accent,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
         CanvasSize = UDim2.new(0, 0, 0, 0),
-        ZIndex = 11,
+        ZIndex = 10,
     }, main)
-    local tabLayout = New("UIListLayout", {
-        FillDirection = Enum.FillDirection.Horizontal,
-        Padding = UDim.new(0, 6),
+    local sidebarLayout = New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Vertical,
+        Padding = UDim.new(0, 8),
         SortOrder = Enum.SortOrder.LayoutOrder,
-        VerticalAlignment = Enum.VerticalAlignment.Center,
-    }, tabBar)
+        HorizontalAlignment = Enum.HorizontalAlignment.Center,
+    }, sidebar)
     New("UIPadding", {
-        PaddingLeft = UDim.new(0, 12),
-        PaddingRight = UDim.new(0, 12),
-    }, tabBar)
-    local function updateTabCanvas()
-        tabBar.CanvasSize = UDim2.new(0, tabLayout.AbsoluteContentSize.X + 24, 0, 48)
+        PaddingTop = UDim.new(0, 12),
+        PaddingBottom = UDim.new(0, 16),
+    }, sidebar)
+    local function updateSidebarCanvas()
+        sidebar.CanvasSize = UDim2.new(0, 0, 0, sidebarLayout.AbsoluteContentSize.Y + 28)
     end
-    tabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateTabCanvas)
-    updateTabCanvas()
+    sidebarLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateSidebarCanvas)
+    updateSidebarCanvas()
 
     -- Área de conteúdo
     local contentHolder = New("Frame", {
         Name = "ContentHolder",
-        Size = UDim2.new(1, 0, 1, -104),
-        Position = UDim2.new(0, 0, 0, 104),
+        Size = UDim2.new(1, -sidebarW, 1, -56),
+        Position = UDim2.new(0, sidebarW, 0, 56),
         BackgroundTransparency = 1,
         ClipsDescendants = true,
         ZIndex = 11,
     }, main)
+    New("Frame", {
+        Name = "SidebarEdge",
+        Size = UDim2.new(0, 1, 1, 0),
+        BackgroundColor3 = Theme.Stroke,
+        BackgroundTransparency = 0.25,
+        BorderSizePixel = 0,
+        ZIndex = 12,
+    }, contentHolder)
+
+    local function cleanCategoryLabel(name)
+        return (name:gsub("^[^%w]+%s*", ""))
+    end
+    local function getCategoryMeta(name)
+        local label = cleanCategoryLabel(name)
+        local key = label:lower()
+        if key:find("combate") then return "combat", "COMBATE", label end
+        if key:find("visual") then return "visual", "VISUAL", label end
+        if key:find("rx") then return "rx", "RX", label end
+        if key:find("ilum") then return "light", "LUZ", label end
+        if key:find("mov") then return "move", "MOVE", label end
+        if key:find("teleport") then return "teleport", "TP", label end
+        if key:find("monitor") then return "monitor", "MON", label end
+        if key:find("key") then return "keybind", "KEYS", label end
+        return "generic", label:upper():sub(1, 6), label
+    end
+    local function buildCategoryIcon(parent, kind)
+        local parts = {}
+        local function track(obj, prop)
+            table.insert(parts, { obj = obj, prop = prop })
+            return obj
+        end
+        local function fill(x, y, w, h, radius)
+            local f = New("Frame", {
+                Size = UDim2.new(0, w, 0, h),
+                Position = UDim2.new(0, x, 0, y),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderSizePixel = 0,
+                ZIndex = 14,
+            }, parent)
+            if radius then Corner(f, radius) end
+            return track(f, "BackgroundColor3")
+        end
+        local function outline(x, y, w, h, radius, thickness)
+            local f = New("Frame", {
+                Size = UDim2.new(0, w, 0, h),
+                Position = UDim2.new(0, x, 0, y),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                ZIndex = 14,
+            }, parent)
+            if radius then Corner(f, radius) end
+            return track(Stroke(f, Color3.fromRGB(255, 255, 255), thickness or 1.7, 0), "Color")
+        end
+
+        if kind == "combat" then
+            outline(15, 6, 20, 20, 999, 1.7)
+            fill(23, 14, 4, 4, 2)
+            fill(24, 3, 2, 6, 1)
+            fill(24, 23, 2, 6, 1)
+            fill(10, 15, 6, 2, 1)
+            fill(34, 15, 6, 2, 1)
+        elseif kind == "visual" then
+            outline(14, 10, 22, 13, 999, 1.7)
+            fill(23, 14, 5, 5, 3)
+        elseif kind == "rx" then
+            fill(17, 12, 3, 11, 1)
+            fill(23, 7, 3, 16, 1)
+            fill(29, 3, 3, 20, 1)
+        elseif kind == "light" then
+            outline(18, 4, 14, 14, 999, 1.7)
+            fill(21, 19, 8, 3, 1)
+            fill(23, 23, 4, 2, 1)
+        elseif kind == "move" then
+            outline(15, 6, 20, 20, 5, 1.7)
+            fill(23, 13, 4, 6, 2)
+        elseif kind == "teleport" then
+            local diamond = New("Frame", {
+                Size = UDim2.new(0, 16, 0, 16),
+                Position = UDim2.new(0, 17, 0, 6),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                Rotation = 45,
+                ZIndex = 14,
+            }, parent)
+            Corner(diamond, 2)
+            track(Stroke(diamond, Color3.fromRGB(255, 255, 255), 1.7, 0), "Color")
+            fill(23, 12, 5, 5, 3)
+        elseif kind == "monitor" then
+            outline(13, 6, 24, 15, 3, 1.7)
+            fill(19, 23, 12, 2, 1)
+            fill(18, 14, 2, 5, 0)
+            fill(23, 11, 2, 8, 0)
+            fill(28, 8, 2, 11, 0)
+        elseif kind == "keybind" then
+            outline(13, 12, 11, 11, 999, 1.7)
+            fill(23, 16, 15, 3, 1)
+            fill(30, 19, 3, 5, 1)
+            fill(34, 19, 3, 5, 1)
+        else
+            outline(17, 8, 16, 16, 999, 1.7)
+            fill(23, 14, 4, 4, 2)
+        end
+
+        return function(color)
+            for _, p in ipairs(parts) do p.obj[p.prop] = color end
+        end
+    end
 
     local tabs = {}
     local function selectTab(index)
         for i, t in ipairs(tabs) do
-            t.page.Visible = (i == index)
             local active = (i == index)
+            t.page.Visible = active
+            t.paintIcon(active and Theme.Accent or Theme.SubText)
+            t.caption.TextColor3 = active and Theme.Accent or Theme.SubText
+            t.indicator.Visible = active
             TweenService:Create(t.button, TweenInfo.new(0.15), {
-                BackgroundColor3 = active and Theme.Accent or Theme.Card,
+                BackgroundColor3 = active and Theme.CardHover or Theme.Card,
+                BackgroundTransparency = active and 0.05 or 0.35,
             }):Play()
-            t.button.TextColor3 = active and Color3.fromRGB(255, 255, 255) or Theme.SubText
+            TweenService:Create(t.buttonStroke, TweenInfo.new(0.15), {
+                Color = active and Theme.Accent or Theme.Stroke,
+                Transparency = active and 0 or 0.45,
+            }):Play()
         end
     end
 
@@ -1180,25 +1296,54 @@ local function CreateWindow(cfg)
         layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
         updateCanvas()
 
+        local iconKind, captionText, label = getCategoryMeta(name)
+
         local button = New("TextButton", {
-            Name = "Tab_" .. name,
-            Size = UDim2.new(0, 0, 0, 34),
-            AutomaticSize = Enum.AutomaticSize.X,
+            Name = "Tab_" .. label,
+            Size = UDim2.new(0, 50, 0, 54),
             BackgroundColor3 = Theme.Card,
-            Text = name,
-            TextColor3 = Theme.SubText,
-            Font = Enum.Font.GothamMedium,
-            TextSize = 13,
+            BackgroundTransparency = 0.35,
+            Text = "",
             AutoButtonColor = false,
             ZIndex = 12,
-        }, tabBar)
-        Corner(button, 9)
-        New("UIPadding", {
-            PaddingLeft = UDim.new(0, 14),
-            PaddingRight = UDim.new(0, 14),
+        }, sidebar)
+        Corner(button, 12)
+        local buttonStroke = Stroke(button, Theme.Stroke, 1, 0.45)
+
+        local indicator = New("Frame", {
+            Name = "Indicator",
+            Size = UDim2.new(0, 3, 0, 20),
+            Position = UDim2.new(0, -1, 0.5, -10),
+            BackgroundColor3 = Theme.Accent,
+            BorderSizePixel = 0,
+            Visible = false,
+            ZIndex = 15,
+        }, button)
+        Corner(indicator, 2)
+
+        local paintIcon = buildCategoryIcon(button, iconKind)
+
+        local caption = New("TextLabel", {
+            Name = "Caption",
+            Size = UDim2.new(1, 0, 0, 12),
+            Position = UDim2.new(0, 0, 1, -15),
+            BackgroundTransparency = 1,
+            Text = captionText,
+            TextColor3 = Theme.SubText,
+            Font = Enum.Font.GothamBold,
+            TextSize = 8,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 15,
         }, button)
 
-        table.insert(tabs, { page = page, button = button })
+        table.insert(tabs, {
+            page = page,
+            button = button,
+            buttonStroke = buttonStroke,
+            indicator = indicator,
+            paintIcon = paintIcon,
+            caption = caption,
+        })
 
         button.MouseButton1Click:Connect(function()
             for i, t in ipairs(tabs) do
