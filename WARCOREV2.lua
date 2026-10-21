@@ -28,6 +28,11 @@ getgenv().SystemConfig = {
     Smoothness = 0.35,
     TeamCheck = true,
 
+    -- Vida / Habilidades
+    HealthRegenEnabled = false,
+    HealthRegenRate = 25,
+    CooldownReduceEnabled = false,
+
     -- Visual / Raio-X
     HighlightEnabled = false,
     HlDepthMode = "AlwaysOnTop",
@@ -92,12 +97,6 @@ getgenv().SystemConfig = {
     FovCircleEnabled = false,
     FovCircleColor = Color3.fromRGB(255, 255, 255),
 
-    -- Teleporte por toque
-    ClickTeleportEnabled = false,
-    ClickTeleportDoubleTap = true,
-    ClickTeleportShowLine = true,
-    ClickTeleportMaxDistance = 500,
-
     -- Destino salvo (persistido no autosave)
     SavedDestinationActive = false,
     SavedDestinationX = 0,
@@ -119,7 +118,6 @@ getgenv().SystemConfig = {
 --// =============================================
 local NoClipAtivo = false
 local isTeleportOpen = false
-local CancelTeleportSelection = nil
 local NoClipConnection = nil
 local flyVelocity = nil
 local flyConnection = nil
@@ -247,6 +245,61 @@ local function HealthColor(ratio)
         return Color3.fromRGB(255, 205, 0)
     else
         return Color3.fromRGB(255, 45, 45)
+    end
+end
+
+-- Redução de cooldown das habilidades (Tools)
+local CooldownNamePatterns = {
+    "cooldown", "cool_down", "cool down", "recharge", "recarga",
+    "recarregar", "reload", "lastuse", "lastused", "nextuse", "nextused",
+    "last_use", "next_use", "last_used", "next_used", "waittime", "espera",
+    "cooldownend", "cooldownstart", "cooldowntime",
+}
+
+local function isCooldownName(name)
+    local n = string.lower(tostring(name))
+    if n == "cd" or n:sub(1, 3) == "cd_" or n:sub(-3) == "_cd" or n:sub(-2) == "cd" then
+        return true
+    end
+    for _, pattern in ipairs(CooldownNamePatterns) do
+        if string.find(n, pattern, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function clearCooldownAttributes(instance)
+    local ok, attrs = pcall(function() return instance:GetAttributes() end)
+    if not ok or type(attrs) ~= "table" then return end
+    for name, value in pairs(attrs) do
+        if type(value) == "number" and value ~= 0 and isCooldownName(name) then
+            pcall(function() instance:SetAttribute(name, 0) end)
+        end
+    end
+end
+
+local function resetToolCooldowns()
+    clearCooldownAttributes(Player)
+    local char = Player.Character
+    local containers = { Player:FindFirstChildOfClass("Backpack"), char }
+    local seen = {}
+    for _, container in ipairs(containers) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") and not seen[tool] then
+                    seen[tool] = true
+                    clearCooldownAttributes(tool)
+                    for _, d in ipairs(tool:GetDescendants()) do
+                        if (d:IsA("NumberValue") or d:IsA("IntValue"))
+                            and d.Value ~= 0 and isCooldownName(d.Name) then
+                            d.Value = 0
+                        end
+                    end
+                    if not tool.Enabled then tool.Enabled = true end
+                end
+            end
+        end
     end
 end
 
@@ -2303,7 +2356,6 @@ function Actions.setTeleport(v)
             isTeleportOpen = false
             toggleMenu(false)
         end
-        if CancelTeleportSelection then CancelTeleportSelection() end
     end
     if UIRefs.TeleportEnabled then UIRefs.TeleportEnabled:Set(v) end
 end
@@ -2345,6 +2397,41 @@ CombatTab:CreateSlider({
     Increment = 0.05,
     CurrentValue = getgenv().SystemConfig.Smoothness,
     Callback = function(v) getgenv().SystemConfig.Smoothness = v end
+})
+
+CombatTab:CreateSection("❤️ Vida")
+CombatTab:CreateToggle({
+    Name = "Regeneração Rápida de Vida",
+    CurrentValue = getgenv().SystemConfig.HealthRegenEnabled,
+    Callback = function(v)
+        getgenv().SystemConfig.HealthRegenEnabled = v
+        WarcoreUI:Notify({
+            Title = v and "✅ Regeneração de Vida" or "⛔ Regeneração de Vida",
+            Content = v and "LIGADO. Sua vida vai encher automaticamente." or "DESLIGADO.",
+            Duration = 2.5,
+        })
+    end
+})
+CombatTab:CreateSlider({
+    Name = "Velocidade de Regeneração (HP/s)",
+    Range = {1, 200},
+    Increment = 1,
+    CurrentValue = getgenv().SystemConfig.HealthRegenRate,
+    Callback = function(v) getgenv().SystemConfig.HealthRegenRate = v end
+})
+
+CombatTab:CreateSection("⚡ Habilidades (Tools)")
+CombatTab:CreateToggle({
+    Name = "Reduzir Cooldown das Habilidades (Tools)",
+    CurrentValue = getgenv().SystemConfig.CooldownReduceEnabled,
+    Callback = function(v)
+        getgenv().SystemConfig.CooldownReduceEnabled = v
+        WarcoreUI:Notify({
+            Title = v and "✅ Cooldown Reduzido" or "⛔ Cooldown Reduzido",
+            Content = v and "LIGADO. Cooldowns das Tools serão zerados enquanto possível." or "DESLIGADO.",
+            Duration = 2.5,
+        })
+    end
 })
 
 --// ----- ABA VISUAL -----
@@ -2640,32 +2727,6 @@ MovimentTab:CreateToggle({
 })
 
 --// ----- ABA TELEPORTE -----
-local TP_DISTANCE_OPTIONS = {
-    { label = "Curto • 150 studs", value = 150 },
-    { label = "Médio • 300 studs", value = 300 },
-    { label = "Longo • 500 studs", value = 500 },
-    { label = "Muito longo • 1000 studs", value = 1000 },
-    { label = "Sem limite (script)", value = 0 },
-}
-local TP_DISTANCE_LABELS = {}
-for _, opt in ipairs(TP_DISTANCE_OPTIONS) do
-    table.insert(TP_DISTANCE_LABELS, opt.label)
-end
-local function tpDistanceLabel(value)
-    local v = tonumber(value)
-    for _, opt in ipairs(TP_DISTANCE_OPTIONS) do
-        if opt.value == v then return opt.label end
-    end
-    if v then return string.format("%d studs", v) end
-    return "Longo • 500 studs"
-end
-local function tpDistanceValueFromLabel(label)
-    for _, opt in ipairs(TP_DISTANCE_OPTIONS) do
-        if opt.label == label then return opt.value end
-    end
-    return 500
-end
-
 TeleportTab:CreateSection("Painel de Teleporte")
 UIRefs.TeleportEnabled = TeleportTab:CreateToggle({
     Name = "Ativar Sistema de Teleporte",
@@ -2681,46 +2742,6 @@ TeleportTab:CreateButton({
 })
 
 TeleportTab:CreateSection("🎯 Teleporte Rápido")
-TeleportTab:CreateToggle({
-    Name = "Teleporte por Toque (tocar no mapa)",
-    CurrentValue = getgenv().SystemConfig.ClickTeleportEnabled,
-    Callback = function(v)
-        getgenv().SystemConfig.ClickTeleportEnabled = v
-        if CancelTeleportSelection then CancelTeleportSelection() end
-        WarcoreUI:Notify({
-            Title = v and "✅ Teleporte por Toque" or "⛔ Teleporte por Toque",
-            Content = v and "LIGADO. Duplo toque no mapa para escolher o destino." or "DESLIGADO. Toques no mapa serão ignorados.",
-            Duration = 2.5,
-        })
-    end
-})
-TeleportTab:CreateToggle({
-    Name = "Confirmação com Duplo Toque (desligado = toque único original)",
-    CurrentValue = getgenv().SystemConfig.ClickTeleportDoubleTap,
-    Callback = function(v)
-        getgenv().SystemConfig.ClickTeleportDoubleTap = v
-        if not v and CancelTeleportSelection then CancelTeleportSelection() end
-    end
-})
-TeleportTab:CreateToggle({
-    Name = "Linha Verde Neon até o Destino",
-    CurrentValue = getgenv().SystemConfig.ClickTeleportShowLine,
-    Callback = function(v) getgenv().SystemConfig.ClickTeleportShowLine = v end
-})
-TeleportTab:CreateDropdown({
-    Name = "Distância Máxima por Toque",
-    Options = TP_DISTANCE_LABELS,
-    CurrentOption = tpDistanceLabel(getgenv().SystemConfig.ClickTeleportMaxDistance),
-    Callback = function(option)
-        local value = tpDistanceValueFromLabel(option)
-        getgenv().SystemConfig.ClickTeleportMaxDistance = value
-        if value == 0 then
-            WarcoreUI:Notify({ Title = "📏 Distância", Content = "Sem limite imposto pelo script. O jogo ainda pode bloquear destinos.", Duration = 3 })
-        else
-            WarcoreUI:Notify({ Title = "📏 Distância", Content = string.format("Limite definido para %d studs.", value), Duration = 2 })
-        end
-    end
-})
 TeleportTab:CreateButton({
     Name = "Teleportar até o Inimigo Mais Próximo",
     Callback = function()
@@ -2966,249 +2987,11 @@ function Visuals.updateFov()
 end
 
 --// =============================================
---// TELEPORTE POR TOQUE + ANTI-AFK
+--// TELEPORTE UTILITÁRIO + ANTI-AFK
 --// =============================================
-local TP_NEON = Color3.fromRGB(57, 255, 20)
-local TP_DOUBLE_TAP_WINDOW = 0.5
-local TP_DOUBLE_TAP_RADIUS = 72
-local TP_TAP_MAX_TIME = 0.35
-local TP_TAP_MAX_MOVE = 16
-local TP_INPUT_STALE_TIME = 1.5
-local TP_DEFAULT_MAX_DISTANCE = 500
-
-local tpSelection = {
-    pending = nil,
-    lastTapAt = 0,
-    lastTapPos = Vector2.new(),
-    activeType = nil,
-    startPos = Vector2.new(),
-    startAt = 0,
-    moved = false,
-}
-
 local function notifyTp(title, content)
     WarcoreUI:Notify({ Title = title, Content = content, Duration = 2.5 })
 end
-
-local TP_UNLIMITED_DISTANCE = 0
-
-local function getTeleportMaxDistance()
-    local value = tonumber(getgenv().SystemConfig.ClickTeleportMaxDistance)
-    if not value or value < 0 then value = TP_DEFAULT_MAX_DISTANCE end
-    if value == TP_UNLIMITED_DISTANCE then return math.huge end
-    return value
-end
-
-local function formatDistanceLimit(maxDistance)
-    if maxDistance == math.huge then return "sem limite do script" end
-    return string.format("%d studs", maxDistance)
-end
-
-local tpConfirm = New("Frame", {
-    Name = "WarcoreTeleportConfirm",
-    AnchorPoint = Vector2.new(0.5, 1),
-    Position = UDim2.new(0.5, 0, 1, -24),
-    Size = UDim2.new(0.9, 0, 0, 104),
-    BackgroundColor3 = Color3.fromRGB(12, 18, 10),
-    BackgroundTransparency = 0.05,
-    BorderSizePixel = 0,
-    Visible = false,
-    ZIndex = 30,
-}, tpGui)
-Corner(tpConfirm, 14)
-local tpConfirmStroke = Stroke(tpConfirm, TP_NEON, 1.5, 0.25)
-New("UISizeConstraint", { MaxSize = Vector2.new(360, 104) }, tpConfirm)
-
-New("TextLabel", {
-    Name = "Title",
-    Size = UDim2.new(1, -24, 0, 22),
-    Position = UDim2.new(0, 12, 0, 8),
-    BackgroundTransparency = 1,
-    Text = "DESTINO SELECIONADO",
-    TextColor3 = TP_NEON,
-    Font = Enum.Font.GothamBold,
-    TextSize = 14,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 31,
-}, tpConfirm)
-
-local tpConfirmInfo = New("TextLabel", {
-    Name = "Info",
-    Size = UDim2.new(1, -24, 0, 18),
-    Position = UDim2.new(0, 12, 0, 29),
-    BackgroundTransparency = 1,
-    Text = "Toque em TELEPORTAR para confirmar",
-    TextColor3 = Color3.fromRGB(220, 235, 210),
-    Font = Enum.Font.GothamMedium,
-    TextSize = 12,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    TextTruncate = Enum.TextTruncate.AtEnd,
-    ZIndex = 31,
-}, tpConfirm)
-
-local tpTeleportBtn = New("TextButton", {
-    Name = "Teleportar",
-    Size = UDim2.new(0.6, -4, 0, 46),
-    Position = UDim2.new(0, 12, 1, -54),
-    BackgroundColor3 = TP_NEON,
-    Text = "TELEPORTAR",
-    TextColor3 = Color3.fromRGB(8, 16, 5),
-    Font = Enum.Font.GothamBlack,
-    TextSize = 15,
-    AutoButtonColor = false,
-    ZIndex = 32,
-}, tpConfirm)
-Corner(tpTeleportBtn, 10)
-Stroke(tpTeleportBtn, Color3.fromRGB(220, 255, 210), 1, 0.35)
-
-local tpCancelBtn = New("TextButton", {
-    Name = "Cancelar",
-    Size = UDim2.new(0.4, -8, 0, 46),
-    Position = UDim2.new(0.6, 0, 1, -54),
-    BackgroundColor3 = Color3.fromRGB(42, 20, 18),
-    Text = "CANCELAR",
-    TextColor3 = Color3.fromRGB(255, 220, 215),
-    Font = Enum.Font.GothamBold,
-    TextSize = 14,
-    AutoButtonColor = false,
-    ZIndex = 32,
-}, tpConfirm)
-Corner(tpCancelBtn, 10)
-Stroke(tpCancelBtn, Color3.fromRGB(255, 77, 61), 1, 0.45)
-
-local oldTpMarker = workspace:FindFirstChild("WarcoreTpMarker")
-if oldTpMarker then oldTpMarker:Destroy() end
-
-local tpMarkerPart = Instance.new("Part")
-tpMarkerPart.Name = "WarcoreTpMarker"
-tpMarkerPart.Anchored = true
-tpMarkerPart.CanCollide = false
-tpMarkerPart.CanTouch = false
-tpMarkerPart.CanQuery = false
-tpMarkerPart.Transparency = 1
-tpMarkerPart.Size = Vector3.new(0.2, 0.2, 0.2)
-tpMarkerPart.Archivable = false
-tpMarkerPart.Parent = workspace
-
-local tpMarkerGui = New("BillboardGui", {
-    Name = "WarcoreTpMarkerGui",
-    Size = UDim2.fromOffset(90, 90),
-    AlwaysOnTop = true,
-    LightInfluence = 0,
-    MaxDistance = 1200,
-    Enabled = false,
-}, tpMarkerPart)
-
-local tpMarkerRing = New("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.5, 0, 0.5, 0),
-    Size = UDim2.fromScale(0.66, 0.66),
-    BackgroundTransparency = 1,
-    ZIndex = 2,
-}, tpMarkerGui)
-Corner(tpMarkerRing, 999)
-local tpMarkerStroke = Stroke(tpMarkerRing, TP_NEON, 3, 0.05)
-local tpMarkerDot = New("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.5, 0, 0.5, 0),
-    Size = UDim2.fromOffset(8, 8),
-    BackgroundColor3 = TP_NEON,
-    BorderSizePixel = 0,
-    ZIndex = 3,
-}, tpMarkerGui)
-Corner(tpMarkerDot, 4)
-New("TextLabel", {
-    Size = UDim2.new(1, 0, 0, 18),
-    Position = UDim2.new(0, 0, 1, -18),
-    BackgroundTransparency = 1,
-    Text = "DESTINO",
-    TextColor3 = TP_NEON,
-    Font = Enum.Font.GothamBold,
-    TextSize = 11,
-    TextStrokeTransparency = 0.35,
-    TextStrokeColor3 = Color3.fromRGB(0, 0, 0),
-    ZIndex = 4,
-}, tpMarkerGui)
-
-local tpLineGlow, tpLineMain
-if type(Drawing) == "table" and type(Drawing.new) == "function" then
-    local okGlow, glow = pcall(Drawing.new, "Line")
-    if okGlow and glow then
-        glow.Color = TP_NEON
-        glow.Thickness = 7
-        glow.Transparency = 0.72
-        glow.Visible = false
-        glow.ZIndex = 1
-        tpLineGlow = glow
-    end
-    local okMain, main = pcall(Drawing.new, "Line")
-    if okMain and main then
-        main.Color = TP_NEON
-        main.Thickness = 2.5
-        main.Transparency = 0.05
-        main.Visible = false
-        main.ZIndex = 2
-        tpLineMain = main
-    end
-end
-
-local function hideTeleportLine()
-    if tpLineGlow then tpLineGlow.Visible = false end
-    if tpLineMain then tpLineMain.Visible = false end
-end
-
-local function isGuiObjectVisible(obj)
-    local node = obj
-    while node do
-        if node:IsA("GuiObject") and not node.Visible then return false end
-        if node:IsA("ScreenGui") and not node.Enabled then return false end
-        node = node.Parent
-    end
-    return true
-end
-
-local function pointInside(gui, pos)
-    if not gui or not gui.Visible then return false end
-    local p, s = gui.AbsolutePosition, gui.AbsoluteSize
-    return pos.X >= p.X and pos.X <= p.X + s.X and pos.Y >= p.Y and pos.Y <= p.Y + s.Y
-end
-
-local function isPointOverUI(pos)
-    if pointInside(tpFrame, pos) or pointInside(tpConfirm, pos) then return true end
-    if pointInside(TpFloatingBtn, pos) or pointInside(FloatingBtn, pos) or pointInside(OpenBtn, pos) then return true end
-
-    local main = Win and Win.main
-    if main and main.Visible and pointInside(main, pos) then return true end
-
-    local containers = {}
-    local playerGui = Player:FindFirstChild("PlayerGui")
-    if playerGui then table.insert(containers, playerGui) end
-    local okCore, coreGui = pcall(function() return CoreGui end)
-    if okCore and coreGui then table.insert(containers, coreGui) end
-
-    for _, container in ipairs(containers) do
-        local ok, objects = pcall(function() return container:GetGuiObjectsAtPosition(pos.X, pos.Y) end)
-        if ok and type(objects) == "table" then
-            for _, obj in ipairs(objects) do
-                if (obj:IsA("GuiButton") or obj:IsA("TextBox")) and isGuiObjectVisible(obj) then
-                    return true
-                end
-            end
-        end
-    end
-    return false
-end
-
-local function clearTeleportSelection()
-    tpSelection.pending = nil
-    tpSelection.lastTapAt = 0
-    tpSelection.activeType = nil
-    tpSelection.moved = false
-    tpConfirm.Visible = false
-    tpMarkerGui.Enabled = false
-    hideTeleportLine()
-end
-CancelTeleportSelection = clearTeleportSelection
 
 local function teleportToPosition(target)
     local char = Player.Character
@@ -3221,43 +3004,10 @@ local function teleportToPosition(target)
     end))
 end
 
-local function performTeleport()
-    local pending = tpSelection.pending
-    if not pending then
-        notifyTp("⚠️ Teleporte", "Nenhum destino selecionado.")
-        return false
-    end
-
-    local char = Player.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not (root and hum) or hum.Health <= 0 then
-        notifyTp("⚠️ Teleporte", "Personagem indisponível.")
-        return false
-    end
-
-    local maxDistance = getTeleportMaxDistance()
-    local distance = (pending.position - root.Position).Magnitude
-    if distance > maxDistance then
-        clearTeleportSelection()
-        notifyTp("⚠️ Teleporte", string.format("Destino a %.0f studs (máx. %s). Aproxime-se e tente de novo.", distance, formatDistanceLimit(maxDistance)))
-        return false
-    end
-
-    if not teleportToPosition(pending.position) then
-        notifyTp("⚠️ Teleporte", "Não foi possível teleportar para esse local.")
-        return false
-    end
-
-    clearTeleportSelection()
-    WarcoreUI:Notify({ Title = "✅ Teleportado", Content = "Destino alcançado com sucesso.", Duration = 2 })
-    return true
-end
-
 local function isDestinationBlocked(target, ignoreList)
     local overlap = OverlapParams.new()
     overlap.FilterType = Enum.RaycastFilterType.Blacklist
-    local list = { Player.Character, tpMarkerPart }
+    local list = { Player.Character }
     if ignoreList then
         for _, item in ipairs(ignoreList) do
             if item then table.insert(list, item) end
@@ -3278,56 +3028,6 @@ local function isDestinationBlocked(target, ignoreList)
     return false
 end
 
-local function resolveDestination(tapPos)
-    local char = Player.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not (char and hum and root) or hum.Health <= 0 then
-        return nil, "Personagem indisponível."
-    end
-
-    local ray = Camera:ViewportPointToRay(tapPos.X, tapPos.Y)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Blacklist
-    params.FilterDescendantsInstances = { char }
-    local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
-    if not hit then
-        return nil, "Nada sólido no local tocado."
-    end
-
-    local hitChar = hit.Instance:FindFirstAncestorOfClass("Model")
-    if hitChar and hitChar ~= char and hitChar:FindFirstChildOfClass("Humanoid") then
-        return nil, "Escolha uma superfície livre, não um personagem."
-    end
-    if hit.Material == Enum.Material.Water then
-        return nil, "Não é possível teleportar para a água."
-    end
-    if hit.Normal.Y < 0.5 then
-        return nil, "Toque em uma superfície plana e segura."
-    end
-
-    local probe = hit.Position + Vector3.new(0, 8, 0)
-    local ground = workspace:Raycast(probe, Vector3.new(0, -20, 0), params)
-    if not ground then
-        return nil, "Sem piso válido nesse destino."
-    end
-    if probe.Y - ground.Position.Y > 12 then
-        return nil, "Destino alto demais ou sem chão próximo."
-    end
-
-    local target = ground.Position + Vector3.new(0, 3.2, 0)
-    local maxDistance = getTeleportMaxDistance()
-    if (target - root.Position).Magnitude > maxDistance then
-        return nil, string.format("Destino a mais de %s. Escolha um ponto mais próximo.", formatDistanceLimit(maxDistance))
-    end
-
-    if isDestinationBlocked(target, { ground.Instance }) then
-        return nil, "Destino bloqueado por uma colisão."
-    end
-
-    return target
-end
-
 local function validateDestinationPoint(target)
     local char = Player.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -3336,15 +3036,9 @@ local function validateDestinationPoint(target)
         return false, "Personagem indisponível."
     end
 
-    local maxDistance = getTeleportMaxDistance()
-    local distance = (target - root.Position).Magnitude
-    if distance > maxDistance then
-        return false, string.format("Destino a %.0f studs (máx. %s). Aproxime-se e tente de novo.", distance, formatDistanceLimit(maxDistance))
-    end
-
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
-    params.FilterDescendantsInstances = { char, tpMarkerPart }
+    params.FilterDescendantsInstances = { char }
     local probe = target + Vector3.new(0, 8, 0)
     local ground = workspace:Raycast(probe, Vector3.new(0, -30, 0), params)
     if not ground then
@@ -3364,188 +3058,6 @@ local function validateDestinationPoint(target)
     return true
 end
 
-local function selectDestination(tapPos, immediate)
-    local target, err = resolveDestination(tapPos)
-    if not target then
-        clearTeleportSelection()
-        notifyTp("⚠️ Destino inválido", (err or "Escolha outro ponto no mapa.") .. " Toque novamente.")
-        return false
-    end
-
-    tpSelection.pending = { position = target }
-    tpSelection.lastTapAt = 0
-    tpMarkerPart.CFrame = CFrame.new(target)
-    tpMarkerGui.Enabled = true
-
-    local char = Player.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    local distance = root and (target - root.Position).Magnitude or 0
-    tpConfirmInfo.Text = string.format("%.1f, %.1f, %.1f  •  %.0f studs", target.X, target.Y, target.Z, distance)
-    tpConfirm.Visible = true
-
-    if immediate then
-        performTeleport()
-    end
-    return true
-end
-
-local function handleMapTap(pos)
-    local cfg = getgenv().SystemConfig
-    if not cfg.ClickTeleportEnabled then return end
-
-    if cfg.ClickTeleportDoubleTap == false then
-        selectDestination(pos, true)
-        return
-    end
-
-    local now = os.clock()
-    local dx = pos.X - tpSelection.lastTapPos.X
-    local dy = pos.Y - tpSelection.lastTapPos.Y
-    local isDouble = tpSelection.lastTapAt > 0
-        and (now - tpSelection.lastTapAt) <= TP_DOUBLE_TAP_WINDOW
-        and math.sqrt(dx * dx + dy * dy) <= TP_DOUBLE_TAP_RADIUS
-
-    if isDouble then
-        tpSelection.lastTapAt = 0
-        selectDestination(pos, false)
-    else
-        tpSelection.lastTapAt = now
-        tpSelection.lastTapPos = pos
-    end
-end
-
-local function isMapInput(input)
-    return input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch
-end
-
-UserInputService.InputBegan:Connect(function(input, gp)
-    if gp or not isMapInput(input) then return end
-    if not getgenv().SystemConfig.ClickTeleportEnabled then return end
-    if UserInputService:GetFocusedTextBox() then return end
-    if isPointOverUI(input.Position) then return end
-
-    local now = os.clock()
-    if tpSelection.activeType then
-        local sameGesture = input.UserInputType == tpSelection.activeType
-        if sameGesture and (now - tpSelection.startAt) <= TP_TAP_MAX_TIME then
-            tpSelection.moved = true
-            return
-        end
-    end
-
-    tpSelection.activeType = input.UserInputType
-    tpSelection.startPos = input.Position
-    tpSelection.startAt = now
-    tpSelection.moved = false
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    local activeType = tpSelection.activeType
-    if not activeType then return end
-
-    if activeType == Enum.UserInputType.MouseButton1 then
-        if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
-    elseif activeType == Enum.UserInputType.Touch then
-        if input.UserInputType ~= Enum.UserInputType.Touch then return end
-    else
-        return
-    end
-
-    local delta = input.Position - tpSelection.startPos
-    if math.sqrt(delta.X * delta.X + delta.Y * delta.Y) > TP_TAP_MAX_MOVE then
-        tpSelection.moved = true
-    end
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    local activeType = tpSelection.activeType
-    if not activeType then return end
-
-    if input.UserInputType ~= activeType then
-        if activeType == Enum.UserInputType.Touch then
-            tpSelection.moved = true
-        end
-        return
-    end
-
-    local startPos = tpSelection.startPos
-    local elapsed = os.clock() - tpSelection.startAt
-    local moved = tpSelection.moved
-    tpSelection.activeType = nil
-    tpSelection.moved = false
-
-    if not getgenv().SystemConfig.ClickTeleportEnabled then return end
-    if moved or elapsed > TP_TAP_MAX_TIME then return end
-    if UserInputService:GetFocusedTextBox() then return end
-    if isPointOverUI(input.Position) then return end
-
-    local delta = input.Position - startPos
-    if math.sqrt(delta.X * delta.X + delta.Y * delta.Y) > TP_TAP_MAX_MOVE then return end
-    handleMapTap(input.Position)
-end)
-
-local function updateTeleportVisuals()
-    if tpSelection.activeType and os.clock() - tpSelection.startAt > TP_INPUT_STALE_TIME then
-        tpSelection.activeType = nil
-        tpSelection.moved = false
-    end
-
-    local pending = tpSelection.pending
-    if not pending then
-        tpMarkerGui.Enabled = false
-        hideTeleportLine()
-        return
-    end
-
-    tpMarkerGui.Enabled = true
-    local pulse = 0.5 + 0.5 * math.sin(os.clock() * 5)
-    tpMarkerRing.Size = UDim2.fromScale(0.62 + 0.08 * pulse, 0.62 + 0.08 * pulse)
-    tpMarkerStroke.Transparency = 0.04 + 0.26 * pulse
-    tpMarkerDot.Size = UDim2.fromOffset(6 + 4 * pulse, 6 + 4 * pulse)
-    tpConfirmStroke.Transparency = 0.12 + 0.22 * pulse
-
-    local cfg = getgenv().SystemConfig
-    if not cfg.ClickTeleportShowLine or not tpLineMain then
-        hideTeleportLine()
-        return
-    end
-
-    local char = Player.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then
-        hideTeleportLine()
-        return
-    end
-
-    local origin, originOn = Camera:WorldToViewportPoint(root.Position + Vector3.new(0, 1.5, 0))
-    local dest, destOn = Camera:WorldToViewportPoint(pending.position + Vector3.new(0, 1, 0))
-    if not originOn or not destOn or origin.Z <= 0 or dest.Z <= 0 then
-        hideTeleportLine()
-        return
-    end
-
-    local from = Vector2.new(origin.X, origin.Y)
-    local to = Vector2.new(dest.X, dest.Y)
-    tpLineMain.From = from
-    tpLineMain.To = to
-    tpLineMain.Color = TP_NEON
-    tpLineMain.Thickness = 2.5 + pulse * 0.8
-    tpLineMain.Transparency = 0.02
-    tpLineMain.Visible = true
-
-    if tpLineGlow then
-        tpLineGlow.From = from
-        tpLineGlow.To = to
-        tpLineGlow.Color = TP_NEON
-        tpLineGlow.Thickness = 7 + pulse * 2
-        tpLineGlow.Transparency = 0.68 + pulse * 0.12
-        tpLineGlow.Visible = true
-    end
-end
-
-tpTeleportBtn.MouseButton1Click:Connect(performTeleport)
-tpCancelBtn.MouseButton1Click:Connect(clearTeleportSelection)
 
 Player.Idled:Connect(function()
     if not getgenv().SystemConfig.AntiAfkEnabled then return end
@@ -3682,7 +3194,7 @@ local function saveCurrentDestination()
         return
     end
 
-    local pos = tpSelection.pending and tpSelection.pending.position or root.Position
+    local pos = root.Position
     local threshold = getVoidThreshold()
     if threshold and pos.Y <= threshold + 5 then
         notifyTp("⚠️ Destino Salvo", "A posição está na zona de queda e não foi salva.")
@@ -3859,7 +3371,6 @@ RunService.RenderStepped:Connect(function(dt)
     end
 
     updateLines()
-    updateTeleportVisuals()
     updateAntiVoidRecovery()
     renderSavedDestinationUI()
     Visuals.updateBoxes()
@@ -3994,24 +3505,44 @@ RunService.RenderStepped:Connect(function(dt)
     end
 end)
 
--- Forçar Speed e Jump no Heartbeat
-RunService.Heartbeat:Connect(function()
+-- Forçar Speed, Jump, Vida e Cooldowns no Heartbeat
+local cooldownAccum = 0
+RunService.Heartbeat:Connect(function(dt)
+    local cfg = getgenv().SystemConfig
+
+    if cfg.CooldownReduceEnabled then
+        cooldownAccum = cooldownAccum + dt
+        if cooldownAccum >= 0.05 then
+            cooldownAccum = 0
+            resetToolCooldowns()
+        end
+    else
+        cooldownAccum = 0
+    end
+
     local char = Player.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    if getgenv().SystemConfig.SpeedEnabled then
-        if hum.WalkSpeed ~= getgenv().SystemConfig.SpeedValue then
-            hum.WalkSpeed = getgenv().SystemConfig.SpeedValue
+    if cfg.HealthRegenEnabled and hum.Health > 0 and hum.Health < hum.MaxHealth then
+        local rate = tonumber(cfg.HealthRegenRate) or 25
+        if rate > 0 then
+            hum.Health = math.min(hum.MaxHealth, hum.Health + rate * dt)
+        end
+    end
+
+    if cfg.SpeedEnabled then
+        if hum.WalkSpeed ~= cfg.SpeedValue then
+            hum.WalkSpeed = cfg.SpeedValue
         end
     else
         if hum.WalkSpeed ~= OriginalWalkSpeed then hum.WalkSpeed = OriginalWalkSpeed end
     end
 
-    if getgenv().SystemConfig.JumpEnabled then
-        if hum.JumpPower ~= getgenv().SystemConfig.JumpPower then
-            hum.JumpPower = getgenv().SystemConfig.JumpPower
+    if cfg.JumpEnabled then
+        if hum.JumpPower ~= cfg.JumpPower then
+            hum.JumpPower = cfg.JumpPower
         end
     else
         if hum.JumpPower ~= OriginalJumpPower then hum.JumpPower = OriginalJumpPower end
@@ -4020,7 +3551,6 @@ end)
 
 -- CharacterAdded
 Player.CharacterAdded:Connect(function(char)
-    if CancelTeleportSelection then CancelTeleportSelection() end
     resetAntiVoidState()
     task.wait(0.6)
     local hum = char:WaitForChild("Humanoid", 5)
@@ -4094,7 +3624,8 @@ FullShutdown = function()
         "ShowFPS", "ShowPlayers",
         "FlyEnabled", "FlyInfinite", "SpeedEnabled",
         "JumpEnabled", "InfiniteJump", "NoClipEnabled",
-        "TeleportEnabled", "ClickTeleportEnabled",
+        "TeleportEnabled",
+        "HealthRegenEnabled", "CooldownReduceEnabled",
         "AntiAfkEnabled",
     }
     for _, key in ipairs(featureKeys) do

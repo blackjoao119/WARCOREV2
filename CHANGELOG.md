@@ -1,5 +1,29 @@
 # WARCORE v2 — Notas de atualização
 
+## 21/10/2026 — Vida, cooldown e teleporte
+
+### Teleporte
+- Removido por completo o teleporte por toque/duplo toque: seleção no mapa,
+  confirmação, marcador, linha neon e limite de distância.
+- Mantidos o painel de teleporte, destino salvo, ANTI-VOID e o botão
+  "Teleportar até o Inimigo Mais Próximo".
+
+### Vida
+- Novo toggle "Regeneração Rápida de Vida".
+- Novo slider "Velocidade de Regeneração (HP/s)" de 1 a 200.
+
+### Habilidades
+- Novo toggle "Reduzir Cooldown das Habilidades (Tools)".
+- O script zera cooldowns numéricos e atributos de cooldown nas Tools do
+  Backpack/Character e reativa a Tool quando ela é desabilitada pelo jogo.
+
+### Validação
+- Sintaxe verificada com `luac -p` (OK).
+
+### Arquivos alterados
+- `WARCOREV2.lua` (renomeado de `WARCORE0.lua`)
+- `CHANGELOG.md`
+
 ## 21/10/2026
 
 ### Botões da janela
