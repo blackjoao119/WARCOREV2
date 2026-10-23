@@ -33,6 +33,15 @@ getgenv().SystemConfig = {
     HealthRegenRate = 25,
     CooldownReduceEnabled = false,
 
+    -- Instinto Superior V2 (auto esquiva de golpes/poderes/ataques)
+    InstinctV2Enabled = false,
+    InstinctRadius = 45,
+    InstinctDodgeDistance = 12,
+    InstinctCooldown = 0.35,
+
+    -- Invisibilidade (local)
+    InvisibleEnabled = false,
+
     -- Visual / Raio-X
     HighlightEnabled = false,
     HlDepthMode = "AlwaysOnTop",
@@ -86,6 +95,8 @@ getgenv().SystemConfig = {
         SpeedEnabled = "Nenhuma",
         NoClipEnabled = "Nenhuma",
         TeleportEnabled = "Nenhuma",
+        InstinctV2Enabled = "Nenhuma",
+        InvisibleEnabled = "Nenhuma",
     },
 
     -- ESP (Caixa 2D)
@@ -2313,6 +2324,169 @@ local function stopNoClip()
 end
 
 --// =============================================
+--// INVISIBILIDADE (LOCAL)
+--// =============================================
+local InvisibleState = { saved = {}, active = false }
+
+local function applyInvisiblePart(part)
+    if InvisibleState.saved[part] == nil then
+        InvisibleState.saved[part] = part.Transparency
+    end
+    part.LocalTransparencyModifier = 1
+    part.Transparency = 1
+end
+
+local function setInvisibility(v)
+    InvisibleState.active = v and true or false
+    getgenv().SystemConfig.InvisibleEnabled = InvisibleState.active
+
+    local char = Player.Character
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then
+                if InvisibleState.active then
+                    applyInvisiblePart(d)
+                elseif InvisibleState.saved[d] ~= nil then
+                    d.Transparency = InvisibleState.saved[d]
+                    d.LocalTransparencyModifier = 0
+                    InvisibleState.saved[d] = nil
+                else
+                    d.Transparency = 0
+                    d.LocalTransparencyModifier = 0
+                end
+            end
+        end
+    end
+
+    if UIRefs.Invisible then UIRefs.Invisible:Set(InvisibleState.active) end
+end
+
+local function refreshInvisibility()
+    if not InvisibleState.active then return end
+    local char = Player.Character
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            applyInvisiblePart(d)
+        end
+    end
+end
+
+--// =============================================
+--// INSTINTO SUPERIOR V2 (AUTO ESQUIVA)
+--// Detecta projéteis, golpes e poderes próximos e desvia.
+--// =============================================
+local InstinctState = { last = 0 }
+local InstinctKeywords = {
+    "bullet", "projectile", "attack", "spell", "orb", "hitbox",
+    "damage", "punch", "slash", "magic", "proj", "skill",
+    "fireball", "beam", "shot", "strike", "power",
+}
+
+local function nameIsThreat(name)
+    local n = string.lower(tostring(name))
+    for _, kw in ipairs(InstinctKeywords) do
+        if string.find(n, kw, 1, true) then return true end
+    end
+    return false
+end
+
+local function findAllThreat()
+    local char = Player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+
+    local cfg = getgenv().SystemConfig
+    local ok, parts = pcall(function()
+        local params = OverlapParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { char }
+        params.MaxParts = 80
+        return workspace:GetPartBoundsInRadius(root.Position, cfg.InstinctRadius, params)
+    end)
+    if not ok or type(parts) ~= "table" then return nil end
+
+    local best, bestDist = nil, math.huge
+    for _, part in ipairs(parts) do
+        if part:IsA("BasePart") then
+            local pos = part.Position
+            local dist = (root.Position - pos).Magnitude
+            local vel
+            local okv, v = pcall(function() return part.AssemblyLinearVelocity end)
+            if okv then vel = v end
+
+            local threat = false
+            if not part.Anchored and vel and typeof(vel) == "Vector3" and vel.Magnitude > 20 then
+                local toMe = root.Position - pos
+                if toMe.Magnitude > 0.1 and vel.Unit:Dot(toMe.Unit) > 0.4 then
+                    threat = true
+                end
+            end
+            if not threat and nameIsThreat(part.Name) then
+                if vel == nil or (typeof(vel) == "Vector3" and vel.Magnitude > 3) then
+                    threat = true
+                end
+            end
+            if not threat then
+                local model = part:FindFirstAncestorOfClass("Model")
+                if model and model ~= char and model:FindFirstChildOfClass("Humanoid") then
+                    if dist < 14 and model:FindFirstChildOfClass("Tool") then
+                        threat = true
+                    end
+                end
+            end
+
+            if threat and dist < bestDist then
+                bestDist = dist
+                best = part
+            end
+        end
+    end
+    return best
+end
+
+local function doInstinctDodge(threat)
+    local char = Player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (root and hum and hum.Health > 0) then return end
+
+    local cfg = getgenv().SystemConfig
+    local dir
+    local okv, vel = pcall(function() return threat.AssemblyLinearVelocity end)
+    if okv and typeof(vel) == "Vector3" and vel.Magnitude > 0.1 then
+        dir = Vector3.new(vel.X, 0, vel.Z)
+    end
+    if not dir or dir.Magnitude < 0.1 then
+        dir = Vector3.new(root.Position.X - threat.Position.X, 0, root.Position.Z - threat.Position.Z)
+    end
+    if dir.Magnitude < 0.1 then
+        dir = root.CFrame.LookVector
+    end
+    dir = dir.Unit
+
+    local side = Vector3.new(-dir.Z, 0, dir.X)
+    if side.Magnitude < 0.1 then side = Vector3.new(1, 0, 0) end
+    side = side.Unit
+
+    local newPos = root.Position + side * cfg.InstinctDodgeDistance + Vector3.new(0, 1.5, 0)
+    root.CFrame = CFrame.new(newPos, newPos + dir)
+    hum:ChangeState(Enum.HumanoidStateType.Jumping)
+end
+
+local function updateInstinct()
+    local cfg = getgenv().SystemConfig
+    if not cfg.InstinctV2Enabled then return end
+    local now = os.clock()
+    if now - InstinctState.last < cfg.InstinctCooldown then return end
+    local threat = findAllThreat()
+    if threat then
+        InstinctState.last = now
+        doInstinctDodge(threat)
+    end
+end
+
+--// =============================================
 --// AÇÕES VINCULÁVEIS (KEYBINDS) + SINCRONIZAÇÃO
 --// Reutiliza as MESMAS funções usadas pelos toggles existentes,
 --// então comportamento continua idêntico.
@@ -2346,6 +2520,16 @@ function Actions.setSpeed(v)
     if UIRefs.SpeedEnabled then UIRefs.SpeedEnabled:Set(v) end
 end
 
+function Actions.setInvisible(v)
+    setInvisibility(v)
+end
+
+function Actions.setInstinct(v)
+    getgenv().SystemConfig.InstinctV2Enabled = v
+    InstinctState.last = 0
+    if UIRefs.InstinctV2 then UIRefs.InstinctV2:Set(v) end
+end
+
 function Actions.setTeleport(v)
     getgenv().SystemConfig.TeleportEnabled = v
     if v then
@@ -2366,6 +2550,8 @@ RegisterKeybind("FlyEnabled", KeybindState.NONE, function() Actions.setFly(not g
 RegisterKeybind("SpeedEnabled", KeybindState.NONE, function() Actions.setSpeed(not getgenv().SystemConfig.SpeedEnabled) end)
 RegisterKeybind("NoClipEnabled", KeybindState.NONE, function() Actions.setNoClip(not getgenv().SystemConfig.NoClipEnabled) end)
 RegisterKeybind("TeleportEnabled", KeybindState.NONE, function() Actions.setTeleport(not getgenv().SystemConfig.TeleportEnabled) end)
+RegisterKeybind("InstinctV2Enabled", KeybindState.NONE, function() Actions.setInstinct(not getgenv().SystemConfig.InstinctV2Enabled) end)
+RegisterKeybind("InvisibleEnabled", KeybindState.NONE, function() Actions.setInvisible(not getgenv().SystemConfig.InvisibleEnabled) end)
 
 --// =============================================
 --// ABAS E CONTROLES (nova interface)
@@ -2434,6 +2620,34 @@ CombatTab:CreateToggle({
     end
 })
 
+CombatTab:CreateSection("🥋 Instinto Superior V2")
+UIRefs.InstinctV2 = CombatTab:CreateToggle({
+    Name = "Instinto Superior V2 (Auto Esquiva)",
+    CurrentValue = getgenv().SystemConfig.InstinctV2Enabled,
+    Callback = Actions.setInstinct
+})
+CombatTab:CreateSlider({
+    Name = "Raio de Detecção (studs)",
+    Range = {10, 120},
+    Increment = 5,
+    CurrentValue = getgenv().SystemConfig.InstinctRadius,
+    Callback = function(v) getgenv().SystemConfig.InstinctRadius = v end
+})
+CombatTab:CreateSlider({
+    Name = "Distância da Esquiva (studs)",
+    Range = {4, 40},
+    Increment = 1,
+    CurrentValue = getgenv().SystemConfig.InstinctDodgeDistance,
+    Callback = function(v) getgenv().SystemConfig.InstinctDodgeDistance = v end
+})
+CombatTab:CreateSlider({
+    Name = "Cooldown da Esquiva (s)",
+    Range = {0.1, 2},
+    Increment = 0.05,
+    CurrentValue = getgenv().SystemConfig.InstinctCooldown,
+    Callback = function(v) getgenv().SystemConfig.InstinctCooldown = v end
+})
+
 --// ----- ABA VISUAL -----
 VisualTab:CreateSection("Elementos de Rastreamento")
 VisualTab:CreateToggle({
@@ -2493,6 +2707,13 @@ VisualTab:CreateColorPicker({
     Name = "Cor da Caixa ESP",
     Color = getgenv().SystemConfig.EspBoxColor,
     Callback = function(Value) getgenv().SystemConfig.EspBoxColor = Value end
+})
+
+VisualTab:CreateSection("🫥 Invisibilidade")
+UIRefs.Invisible = VisualTab:CreateToggle({
+    Name = "Ficar Invisível (Local)",
+    CurrentValue = getgenv().SystemConfig.InvisibleEnabled,
+    Callback = Actions.setInvisible
 })
 
 --// ----- ABA OPÇÕES RX -----
@@ -2795,6 +3016,8 @@ makeBind("FlyEnabled", "Alternar Fly")
 makeBind("SpeedEnabled", "Alternar Speed Hack")
 makeBind("NoClipEnabled", "Alternar No-Clip")
 makeBind("TeleportEnabled", "Alternar Sistema de Teleporte")
+makeBind("InstinctV2Enabled", "Alternar Instinto Superior V2")
+makeBind("InvisibleEnabled", "Alternar Invisibilidade")
 
 Win.selectTab(1)
 
@@ -3375,6 +3598,7 @@ RunService.RenderStepped:Connect(function(dt)
     renderSavedDestinationUI()
     Visuals.updateBoxes()
     Visuals.updateFov()
+    updateInstinct()
 
     if getgenv().SystemConfig.MiraAtiva then
         local target = getTarget()
@@ -3520,6 +3744,8 @@ RunService.Heartbeat:Connect(function(dt)
         cooldownAccum = 0
     end
 
+    refreshInvisibility()
+
     local char = Player.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -3553,6 +3779,10 @@ end)
 Player.CharacterAdded:Connect(function(char)
     resetAntiVoidState()
     task.wait(0.6)
+    if getgenv().SystemConfig.InvisibleEnabled then
+        InvisibleState.saved = {}
+        setInvisibility(true)
+    end
     local hum = char:WaitForChild("Humanoid", 5)
     if hum then
         OriginalWalkSpeed = hum.WalkSpeed
@@ -3588,6 +3818,7 @@ local function applyRuntimeState()
 
     if cfg.FlyEnabled then task.spawn(startFly) end
     if cfg.NoClipEnabled then startNoClip() end
+    if cfg.InvisibleEnabled then setInvisibility(true) end
 
     animateBtn(TpFloatingBtn, cfg.TeleportEnabled)
 end
@@ -3612,6 +3843,8 @@ FullShutdown = function()
     Actions.setNoClip(false)
     Actions.setSpeed(false)
     Actions.setTeleport(false)
+    Actions.setInvisible(false)
+    Actions.setInstinct(false)
 
     -- Desliga todas as flags de recurso
     local featureKeys = {
@@ -3626,6 +3859,7 @@ FullShutdown = function()
         "JumpEnabled", "InfiniteJump", "NoClipEnabled",
         "TeleportEnabled",
         "HealthRegenEnabled", "CooldownReduceEnabled",
+        "InstinctV2Enabled", "InvisibleEnabled",
         "AntiAfkEnabled",
     }
     for _, key in ipairs(featureKeys) do

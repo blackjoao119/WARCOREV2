@@ -1,5 +1,34 @@
 # WARCORE v2 — Notas de atualização
 
+## 23/10/2026 — Invisibilidade e Instinto Superior V2
+
+### Invisibilidade
+- Novo toggle "Ficar Invisível (Local)" na aba Visual.
+- Aplica `LocalTransparencyModifier = 1` e `Transparency = 1` em todas as
+  partes do personagem, guardando a transparência original para restaurar.
+- Funciona com acessórios, reaplica ao trocar de personagem e é restaurada
+  pelo botão de desligamento total.
+- Keybind opcional em Keybinds e autosave da opção.
+
+### Instinto Superior V2 (Auto Esquiva)
+- Novo toggle "Instinto Superior V2 (Auto Esquiva)" na aba Combate.
+- Detecta projéteis em movimento, hitboxes/poderes por nome e golpes de
+  jogadores com Tool equipada em um raio configurável.
+- Desvia lateralmente com dash curto, respeitando cooldown.
+- Sliders: Raio de Detecção (10–120), Distância da Esquiva (4–40) e
+  Cooldown da Esquiva (0,1–2 s).
+- Keybind opcional em Keybinds e autosave das opções.
+
+### Validação
+- Sintaxe verificada com `luac -p` (OK).
+- Harness simulado: liga/desliga da invisibilidade, desvio de projétil,
+  cooldown e restauração no desligamento total (todos OK).
+
+### Arquivos alterados
+- `WARCOREV2.lua`
+- `WARCORE0.lua` (alias)
+- `CHANGELOG.md`
+
 ## 21/10/2026 — Vida, cooldown e teleporte
 
 ### Teleporte
